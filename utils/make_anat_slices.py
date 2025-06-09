@@ -1,0 +1,1 @@
+/home/tonglab/david/master_scripts/fMRI/make_anat_slices.py

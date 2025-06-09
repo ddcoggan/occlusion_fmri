@@ -1,0 +1,1 @@
+/home/tonglab/david/master_scripts/fMRI/get_wang_atlas.py
