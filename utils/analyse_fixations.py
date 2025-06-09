@@ -6,7 +6,7 @@ import numpy as np
 from config import PROJ_DIR
 
 PPD = 40.4
-data_path = op.join(PROJ_DIR, 'data/in_vivo/behavioral/fMRI_fixation/data.csv')
+data_path = op.join(PROJ_DIR, 'control/fixation/results.csv')
 data = pd.read_csv(data_path)
 
 

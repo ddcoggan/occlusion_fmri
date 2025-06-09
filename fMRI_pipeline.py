@@ -7,7 +7,7 @@ import os.path as op
 import time
 import glob
 import json
-from utils import PROJ_DIR, seconds_to_text
+from utils import seconds_to_text
 
 stop_for_checks = False
 
@@ -42,7 +42,7 @@ if __name__ == "__main__":
 
         # FEAT analysis for each run
         from utils import FEAT_runwise
-        FEAT_runwise(num_procs, overwrite)
+        FEAT_runwise(num_procs)
 
         # check registration quality
         if stop_for_checks:
@@ -52,7 +52,7 @@ if __name__ == "__main__":
         # FEAT analysis across runs for each subject
         from utils import FEAT_subjectwise
         for space in ['func', 'standard']:
-            FEAT_subjectwise(num_procs, space=space)
+            FEAT_subjectwise(num_procs)
 
         # FEAT analysis across entire sample
         from utils import FEAT_groupwise

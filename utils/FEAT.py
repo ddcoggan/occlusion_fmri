@@ -27,14 +27,13 @@ def FEAT_runwise(n_procs=None):
 
         design_dir = f'derivatives/FEAT/designs/runwise/{task}'
         os.makedirs(design_dir, exist_ok=True)
-        conds = CFG.cond_labels['loc'] if task == 'objectLocaliser' else \
-            CFG.cond_labels['exp1']
+        conds = CFG.cond_labels['exp1']
         n_contrasts = len(CFG.FEAT_contrasts[exp][task])
 
         # find all runs of this scan
-        run_paths = sorted(glob.glob(f"derivatives/{input_dir}/**/*/" \
-                                     f"*{task}*_desc-preproc" \
-                                     f"_bold.nii.gz", recursive=True))
+        run_paths = sorted(glob.glob(
+            f"derivatives/{input_dir}/**/*/*{task}*_desc-preproc_bold.nii.gz",
+            recursive=True))
         assert len(run_paths)
 
         for run_path in run_paths:
@@ -143,106 +142,102 @@ def FEAT_runwise(n_procs=None):
                 p.communicate()
 
 
-def FEAT_subjectwise(n_procs=None, space='func'):
+def FEAT_subjectwise(n_procs=None):
 
-    print(f'Running FEAT subject-wise analyses in {space} space...')
+    print(f'Running FEAT subject-wise analyses...')
 
     subjects = json.load(open('participants.json', 'r+'))
     exp = op.basename(os.getcwd())
     design_paths = {}
 
 
-    for subject in subjects:
+    for subject, task in itertools.product(subjects, CFG.scan_params[exp]):
 
-        for task in CFG.scan_params[exp]:
+        design_paths[f'{subject}_{task}'] = []
+        design_dir = f"derivatives/FEAT/designs/subjectwise/{task}"
+        os.makedirs(design_dir, exist_ok=True)
+        n_contrasts = len(CFG.FEAT_contrasts[exp][task])
 
-            design_paths[f'{subject}_{task}'] = []
-            design_dir = f"derivatives/FEAT/designs/subjectwise/{task}"
-            os.makedirs(design_dir, exist_ok=True)
-            n_contrasts = len(CFG.FEAT_contrasts[exp][task])
+        # find run-wise dirs
+        runs_all = sorted(glob.glob(f"derivatives/FEAT/sub-{subject}/"
+                                    f"*/task-{task}/run-*.feat"))
+        n_runs_all = len(runs_all)
 
-            # find run-wise dirs
-            runs_all = sorted(glob.glob(f"derivatives/FEAT/sub-{subject}/"
-                                        f"*/task-{task}/run-*.feat"))
-            n_runs_all = len(runs_all)
+        # replace reg dir
+        reg_orig = f'derivatives/registration/sub-{subject}'
+        for run_dir in runs_all:
+            reg_dir = f'{run_dir}/reg'
+            if op.islink(reg_dir):
+                subprocess.Popen(['rm', reg_dir]).wait()
+            subprocess.Popen(f'ln -s {op.abspath(reg_orig)} '
+                             f'{run_dir}/reg'.split(' ')).wait()
 
-            # replace reg dir depending on space
-            reg_orig = f'derivatives/registration/sub-{subject}'
-            if space == 'func':
-                reg_orig += '_no-reg'
-            for run_dir in runs_all:
-                reg_dir = f'{run_dir}/reg'
-                if op.islink(reg_dir):
-                    subprocess.Popen(['rm', reg_dir]).wait()
-                subprocess.Popen(f'ln -s {op.abspath(reg_orig)} '
-                                 f'{run_dir}/reg'.split(' ')).wait()
+        # make sets of runs to analyse
+        run_sets = {'all-runs': runs_all}
+        if 'occlusion' in task:
+            n_splits = 8
+            for split in range(n_splits):
+                runs_A = random.sample(runs_all, n_runs_all // 2)
+                runs_B = [x for x in runs_all if x not in runs_A]
+                run_sets[f'split-{split}A'] = runs_A
+                run_sets[f'split-{split}B'] = runs_B
 
-            # make sets of runs to analyse
-            run_sets = {'all-runs': runs_all}
-            if 'occlusion' in task:
-                n_splits = 8
-                for split in range(n_splits):
-                    runs_A = random.sample(runs_all, n_runs_all // 2)
-                    runs_B = [x for x in runs_all if x not in runs_A]
-                    run_sets[f'split-{split}A'] = runs_A
-                    run_sets[f'split-{split}B'] = runs_B
+        for label, runs in run_sets.items():
 
-            for label, runs in run_sets.items():
+            n_runs = len(runs)
+            outdir = op.abspath(f"derivatives/FEAT/sub-"
+                      f"{subject}/subject-wise/task"
+                      f"-{task}_{label}.gfeat")
 
-                n_runs = len(runs)
-                outdir = op.abspath(f"derivatives/FEAT/sub-"
-                          f"{subject}/subject-wise_space-{space}/task"
-                          f"-{task}_{label}.gfeat")
-
-                # determine if this analysis needs to be (re)performed
-                prnt_str = f'{subject} | {task} | {label} |'
-                if os.path.isdir(outdir):
-                    if os.path.isfile(f"{outdir}/cope{n_contrasts}.feat/stats/"
-                                      f"zstat1.nii.gz"):
-                        #print(f'{prnt_str} Analysis found and appears '
-                        #      f'complete, skipping...')
-                        run_feat = False
-                    else:
-                        print(f'{prnt_str} Incomplete analysis found, '
-                              f'deleting and adding to job list...')
-                        shutil.rmtree(outdir)
-                        run_feat = True
+            # determine if this analysis needs to be (re)performed
+            prnt_str = f'{subject} | {task} | {label} |'
+            if os.path.isdir(outdir):
+                if os.path.isfile(f"{outdir}/cope{n_contrasts}.feat/stats/"
+                                  f"zstat1.nii.gz"):
+                    #print(f'{prnt_str} Analysis found and appears '
+                    #      f'complete, skipping...')
+                    run_feat = False
                 else:
-                    print(f'{prnt_str} Analysis not found, adding to '
-                          f'job list...')
+                    print(f'{prnt_str} Incomplete analysis found, '
+                          f'deleting and adding to job list...')
+                    shutil.rmtree(outdir)
                     run_feat = True
+            else:
+                print(f'{prnt_str} Analysis not found, adding to '
+                      f'job list...')
+                run_feat = True
 
-                # design analysis
-                if run_feat:
+            # design analysis
+            if run_feat:
 
-                    # input basic parameters for higher-level analysis
-                    design = ''
-                    for key, val in CFG.FEAT_designs['base'].items():
-                        design += f'\nset fmri({key}) {val}'
-                    for key, val in CFG.FEAT_designs['subjectwise'].items():
-                        design += f'\nset fmri({key}) {val}'
+                # input basic parameters for higher-level analysis
+                design = ''
+                for key, val in CFG.FEAT_designs['base'].items():
+                    design += f'\nset fmri({key}) {val}'
+                for key, val in CFG.FEAT_designs['subjectwise'].items():
+                    design += f'\nset fmri({key}) {val}'
 
-                    # input analysis-specific parameters
-                    design += f'\nset fmri(outputdir) {op.abspath(outdir)}'
-                    design += f'\nset fmri(npts) {n_runs}'
-                    design += f'\nset fmri(multiple) {n_runs}'
-                    for r, run in enumerate(runs):
-                        design += f'\nset fmri(evg{r + 1}.1) 1.0'
-                        design += f'\nset fmri(groupmem.{r + 1}) 1'
-                        design += f'\nset feat_files({r + 1}) ' \
-                                  f'{op.abspath(run)}'
-                    design += f'\nset fmri(ncopeinputs) {n_contrasts}'
-                    for c in range(n_contrasts):
-                        design += f'\nset fmri(copeinput.{c + 1}) 1'
+                # input analysis-specific parameters
+                design += f'\nset fmri(outputdir) {op.abspath(outdir)}'
+                design += f'\nset fmri(npts) {n_runs}'
+                design += f'\nset fmri(multiple) {n_runs}'
+                for r, run in enumerate(runs):
+                    design += f'\nset fmri(evg{r + 1}.1) 1.0'
+                    design += f'\nset fmri(groupmem.{r + 1}) 1'
+                    design += f'\nset feat_files({r + 1}) ' \
+                              f'{op.abspath(run)}'
+                design += f'\nset fmri(ncopeinputs) {n_contrasts}'
+                for c in range(n_contrasts):
+                    design += f'\nset fmri(copeinput.{c + 1}) 1'
 
-                    # write the file out with a unique filename
-                    design_path = f'{design_dir}/{subject}_{label}.fsf'
-                    with open(design_path, 'w') as file:
-                        file.write(design)
-                    file.close()
+                # write the file out with a unique filename
+                design_path = f'{design_dir}/{subject}_{label}.fsf'
+                with open(design_path, 'w') as file:
+                    file.write(design)
+                file.close()
 
-                    # store FEAT command for parallel processing
-                    design_paths[f'{subject}_{task}'].append(design_path)
+                # store FEAT command for parallel processing
+                design_paths[f'{subject}_{task}'].append(design_path)
 
 
     # run jobs in parallel
@@ -297,7 +292,7 @@ def FEAT_groupwise(n_procs=None):
 
     design_paths = []
     exp = op.basename(os.getcwd())
-    subjects = CFG.subjects_final[exp]
+    subjects = CFG.subjects[exp]
     n_subjects = len(subjects)
 
     for task in CFG.scan_params[exp]:
@@ -346,8 +341,8 @@ def FEAT_groupwise(n_procs=None):
                     design += f'\nset fmri(evg{s + 1}.1) 1.0'
                     design += f'\nset fmri(groupmem.{s + 1}) 1'
                     input_dir = (
-                        f'derivatives/FEAT/sub-{subject}/subject-wise_space-'
-                        f'standard/task-{task}_all-runs.gfeat/cope{c + 1}.feat')
+                        f'derivatives/FEAT/sub-{subject}/subject-wise/'
+                        f'task-{task}_all-runs.gfeat/cope{c + 1}.feat')
                     design += f'\nset feat_files({s + 1}) ' \
                               f'{op.abspath(input_dir)}'
                 design += f'\nset fmri(ncopeinputs) 1'
@@ -381,14 +376,3 @@ def FEAT_groupwise(n_procs=None):
             for p in processes:
                 p.communicate()
 
-
-if __name__ == "__main__":
-
-    os.chdir(f'{PROJ_DIR}/in_vivo/fMRI/exp1')
-    n_procs = 10
-    for orig, input_folder in zip(['', '_orig'], ['fmriprep-23.0.2',
-                                                  'preprocessing']):
-        FEAT_runwise(n_procs, f'derivatives{orig}/{input_folder}',
-                     f'derivatives{orig}/FEAT')
-        FEAT_subjectwise(n_procs, f'derivatives{orig}/FEAT')
-        FEAT_groupwise(n_procs, f'derivatives{orig}/FEAT')

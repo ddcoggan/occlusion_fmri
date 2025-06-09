@@ -214,8 +214,9 @@ def registration(subjects, overwrite):
 
             # make reg images
             d = reg_dir
-            if (not op.isfile(f'{d}/example_func2highres.png') or 'func_anat' in
-                    overwrite):
+            if method == 'FSL' and (
+                    not op.isfile(f'{d}/example_func2highres.png') or
+                    'func_anat' in  overwrite):
                 slicer_str = (
                     f'-x 0.35 {d}/sla.png -x 0.45 {d}/slb.png '
                     f'-x 0.55 {d}/slc.png -x 0.65 {d}/sld.png '
@@ -325,28 +326,3 @@ def registration(subjects, overwrite):
             if not op.isfile(out_path):
                 image = f'{reg_dir}/{transform}.png'
                 os.system(f'ln -sf {op.abspath(image)} {out_path}')
-
-        # make a fake reg dir that tricks fsl into doing higher-level analyses in
-        # native func space
-        no_reg_dir = f'derivatives/registration/sub-{subject}_no-reg'
-        if not op.isdir(no_reg_dir):
-            shutil.copytree(reg_dir, no_reg_dir)
-            for reg_mat in glob.glob(f'{no_reg_dir}/*.mat'):
-                os.remove(reg_mat)
-                shutil.copy(f'{os.environ["FSLDIR"]}/etc/flirtsch/ident.mat',
-                            reg_mat)
-            for reg_warp in glob.glob(f'{no_reg_dir}/*warp.nii.gz'):
-                os.remove(reg_warp)
-            for space in ['standard', 'highres']:
-                os.remove(f'{no_reg_dir}/{space}.nii.gz')
-                shutil.copy(f'{no_reg_dir}/example_func.nii.gz',
-                            f'{no_reg_dir}/{space}.nii.gz')
-
-if __name__ == "__main__":
-
-    import json
-    overwrite = []  # ['func_anat', 'anat_std', 'func_std']
-    for exp in ['exp1','exp2']:
-        os.chdir(f'{PROJ_DIR}/{exp}')
-        subjects = json.load(open("participants.json", "r+"))
-        registration(exp, overwrite)

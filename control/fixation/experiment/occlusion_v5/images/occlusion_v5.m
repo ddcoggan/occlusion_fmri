@@ -1,0 +1,524 @@
+subject = 'M012';
+session = '220426';
+debug = 1;
+vertOffset = 0;
+
+%%%%%%%%%%%%%%%%%%
+% basic setting
+%%%%%%%%%%%%%%%%%%
+
+%%%% resolution
+if debug == 1
+	experiment.resolution = SetResolution(max(Screen('Screens')),1600,1200,60); % laptop
+else
+    experiment.resolution = SetResolution(max(Screen('Screens')),1600,1200,60); % scanner
+end
+
+%%%% keyboard
+[keyboardIndices, productNames, ~] = GetKeyboardIndices ;
+deviceNumber = keyboardIndices(1);
+
+%%%% basic naming set-up
+experiment.subject = subject;
+experiment.session = session;
+experiment.root = pwd;
+experiment.date = datestr(now,30);
+experiment.rand = sum(100*clock);
+rand('twister', experiment.rand);
+
+experiment.scanNum = input('Scan number? : ');
+experiment.runNum = input('Run number? : ');
+experiment.attn = input('Attention? (0=off(characters),1=on(objects): ');
+
+
+%%%%%%%%%%%
+% screen
+%%%%%%%%%%%
+
+%%%% scales all of the stimuli in DVA to the screensize
+params.screenWidth = 17;            % in cm; laptop=27.5, office=43, 3Tb=19, 7T=17, miniHelm=39;
+params.viewingDist = 48;            % in cm; 3Tb/office=43, 7T=48, miniHelm=57;
+% params.backgroundColor = [.5 .5 .5];% gray
+params.backgroundColor = 200;
+params.fontSize = 20;
+
+%%%% open screen
+AssertOpenGL;
+Screen('Preference', 'SkipSyncTests', 0);
+screens = Screen('Screens');        % determines screen numbers. starts at 0 with main screen
+screenNum = max(screens);           % chooses last screen to show stimuli.
+white = WhiteIndex(screenNum);
+black = BlackIndex(screenNum);
+% gray = round((white+black)./2);
+gray = params.backgroundColor;
+[w, rect] = Screen('OpenWindow',screenNum, gray);
+% [w, rect] = Screen('OpenWindow',screenNum, gray, [1024/4 768/4 1024/4*3 768/4*3]); % for debugging
+
+%%%%%%%%%%%%%%%
+% parameters
+%%%%%%%%%%%%%%%
+
+%%%% conditions & layout
+params.vertOffset = vertOffset;             % vertical offset
+params.gammaCorrect = 0;                    % make sure this is on at the scanner!
+params.ppd = pi * rect(3) / (atan(params.screenWidth/params.viewingDist/2)) / 360; 
+params.fixSizeDeg = .5;                     % fixation point size
+params.fixSize = round(params.fixSizeDeg*params.ppd);
+
+%%%% timing
+params.TRlength = 2;                        % in seconds
+params.numBlocks = 24;       
+params.initialFixation = 16;                % in seconds 
+params.finalFixation = 10;                  % in seconds 
+params.stimDur = .25;                   % stimulus duration in seconds
+params.imsPerBlock = 8;                      % number of image repetitions per block
+params.ISI = .25;                       % inter stimulus interval in seconds
+params.IBI = 6;                      % inter block interval in seconds
+params.blockLength = params.imsPerBlock * (params.stimDur + params.ISI);
+
+
+% display
+params.imgWidthDeg = 9;
+params.imgWidth = round(params.imgWidthDeg * params.ppd);
+
+%%%%%%%%%%%%%
+% stimulus   
+%%%%%%%%%%%%%
+conds = struct('occluded',[],'category',[],'topbot',[],'image',[]);
+categories = {'bear','bison','elephant','hare','jeep','lamp','sportsCar','teapot'};
+cnt = 1;
+for c = 1:numel(categories)
+    category = categories{c};
+    imageFile = dir(fullfile('occlusion_v5/images/unoccluded', category, '*.JPEG'));
+    conds(cnt).occluded = 'unoccluded';
+    conds(cnt).category = category;
+    conds(cnt).topbot = 'none';
+    conds(cnt).image = imread(fullfile('occlusion_v5/images/unoccluded', category, imageFile.name));
+    cnt = cnt + 1;
+end
+for c = 1:numel(categories)
+    for topbot = {'top','bot'}
+        category = categories{c};
+        imageFile = dir(fullfile('occlusion_v5/images/occluded', category, topbot{1}, '*.JPEG'));
+        conds(cnt).occluded = 'occluded';
+        conds(cnt).category = category;
+        conds(cnt).topbot = topbot;
+        conds(cnt).image = imread(fullfile('occlusion_v5/images/occluded', category, topbot{1}, imageFile.name));
+        cnt = cnt + 1;
+    end
+end
+
+experiment.condsShuffle = conds(randperm(numel(conds)));
+
+letters = ['ABCDEFGHIJKLMNOP'];
+
+%%%%%%%%%%%%%%%
+% task setup
+%%%%%%%%%%%%%%%
+
+
+if experiment.attn == 1
+    
+    %%%% animate/inanimate identification task
+    experiment.task.target = [];
+    for c = 1:numel(experiment.condsShuffle)
+        for cat = 1:8
+            if strcmp(experiment.condsShuffle(c).category, categories{cat})
+                if cat < 5
+                    experiment.task.target = [experiment.task.target, 1];
+                else
+                    experiment.task.target = [experiment.task.target, 2];
+                end
+            end
+        end
+    end
+    experiment.task.response = zeros(size(experiment.task.target));
+    experiment.task.response_time = zeros(size(experiment.task.target));
+    experiment.task.accuracy = 0;
+    experiment.task.meanRT = 0;
+    
+    taskText = 'object';
+    
+else
+    
+    %%%% character identification task
+    targetLetters = ['O', 'K'];
+    experiment.task.target = [];
+    experiment.task.target_time = [];
+    experiment.task.response = [];
+    experiment.task.response_time = [];
+    experiment.task.accuracy = 0;
+    experiment.task.meanRT = 0;
+    
+    taskText = 'characters';
+    
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% ET PARAMETERS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+ET_ON = 1;
+
+% This applies to actual trials
+params.AbortTrialWhenExceeded = [ ] ; % During actual expt
+
+% This applies to practice trials (turned off during actual expt)
+params.ShowETbox = [ 1  ]; % during practice
+params.ETbox = [  3  ];% [ 3+.5 ]; % in VA; actually, diameter of a circle
+params.ETbox_size_pix = [ params.ETbox params.ETbox ] * params.ppd; 
+params.ETbox_color = [ 255 255 255 ]*.6;
+% params.ShowRealTimeGaze = [ 1 ]; % [] or [ something ]
+params.ShowRealTimeGaze = [  ]; % [] or [ something ]
+params.nGazetoShow = [ 60 ]; % current~past N fixations
+params.nGazeAllowed =  [ 12 ];% [ 12 ]=1st session of AP,DM; % Abort the trial if recent N trials were ALL outside the circle
+cmap_gaze = [255 0 0]; % repmat([255 0 0]', 1, s.nGazetoShow); 
+cmap_gaze_exceed = [255 0 0]; % repmat([0 0 255]', 1, s.nGazetoShow);    
+
+params.Fixation.Color = [1 1 1]*255*0; % [1 1 1]*[ 128*.4 ]; % [ s.Background*.7 ]; % Inside Fixation(Cross) s.Black(1); %
+params.Fixation.Color2 = [ params.Fixation.Color ]; % [1 1 1]*[ 10] ; % [ 255 0 0 ]; % [0 0 0]
+% tmp_VA = [ .25 ];% .25? radius = .5? in diameter  %% [.32 ];  % [2, 6, 8]; in pixel; of Radius; was [2, 4, 6] in pilot; 
+tmp_VA = [ .1 ];% .25? radius = .5? in diameter  %% [.32 ];  % [2, 6, 8]; in pixel; of Radius; was [2, 4, 6] in pilot; 
+params.Fixation.R_pix = round(tmp_VA * params.ppd); 
+params.Fixation.R_VA = params.Fixation.R_pix / params.ppd;
+params.Fixation.R2_pix = round(params.Fixation.R_VA*[ .2 ] * params.ppd); 
+params.Fixation.R2_VA =  params.Fixation.R2_pix/params.ppd;  % [2, 6, 8]; in pixel; of Radius; was [2, 4, 6] in pilot;     
+params.Fixation.Width_pix = round(params.Fixation.R_pix*.2 ); 
+params.Fixation.Width_VA = params.Fixation.Width_pix / params.ppd; %  [ .03 ]; % Pen Width   
+
+params.Fixation.rect  = CenterRect( [0 0 params.Fixation.R_pix*2  params.Fixation.R_pix*2], rect );
+params.Fixation.rect2 = CenterRect( [0 0 params.Fixation.R2_pix*2 params.Fixation.R2_pix*2], rect );
+
+%%%% INITIALIZE EYETRACKING
+if ~isempty(ET_ON)
+    if EyelinkInit()~= 1;
+        error('ERROR: Eyetracking not on-line.  Make sure it is plugged in and turned on...\n')
+        sca
+        return;
+    end;
+
+    %%% Sets ET connection
+    el = EyelinkInitDefaults(win);
+
+    %%% Custum calibration: Adapted from EyelinkPictureCustomCalibration
+    el.calibrationtargetsize=1; % from 2.5
+    el.calibrationtargetwidth=.5; % from 1
+    el.displayCalResults = 1; % [ avgError ?? ??? ]
+    EyelinkUpdateDefaults(el)
+    
+    % SET UP TRACKER CONFIGURATION
+    % Setting the proper recording resolution, proper calibration type,
+    % as well as the data file content;
+    width=ScreenRes.width; height=ScreenRes.height;
+    Eyelink('command','screen_pixel_coords = %ld %ld %ld %ld', 0, 0, width-1, height-1);
+    Eyelink('message', 'DISPLAY_COORDS %ld %ld %ld %ld', 0, 0, width-1, height-1);
+    Eyelink('command', 'calibration_type = HV13'); % HV5 HV9 HV13 
+    Eyelink('command', 'generate_default_targets = NO');
+    
+    %%%% layout of calibration points 
+    ncal_angle = 8; % 8 angles along the larger circle (one per 45?)
+    cal_angles = linspace(0, 2*pi, ncal_angle+1)+pi/4; cal_angles(end)=[];
+    cal_radius = [ 5 ]*params.ppd; % Eccentricity    
+    ncal_angle2 = 4; % 4 angles along the smaller circle (one per 45?)
+    cal_angles2 = linspace(0, 2*pi, ncal_angle2+1); cal_angles2(end)=[];
+    cal_radius2 = cal_radius/2; % [ 2.5 ]*s.ppd; 
+    
+    cal_xx = round(  width/2 + [cos(cal_angles)*cal_radius  cos(cal_angles2)*cal_radius2 ]);
+    cal_yy = round( height/2 + [sin(cal_angles)*cal_radius  sin(cal_angles2)*cal_radius2 ]);    
+    cal_xx = [ width/2 cal_xx ];
+    cal_yy = [ height/2 cal_yy ];         
+    
+    ncal_sample = length(cal_xx)  % 4+8+1(center) = 13
+    cal_sequence = sprintf('%d,',[ 0 1:ncal_sample] ); cal_sequence(end)=[]
+    cal_targets = [ cal_xx; cal_yy ]; cal_targets = cal_targets(:)';
+    cal_targets = sprintf('%d,%d ', cal_targets)
+    
+    % STEP 5.1 modify calibration and validation target locations
+    Eyelink('command', ['calibration_samples = ' num2str(ncal_sample+1) ]); % +1 = including initial 0(=center)
+    Eyelink('command', ['calibration_sequence = ' cal_sequence  ] );% first xy = fixation (=sequence 1)
+    Eyelink('command', ['calibration_targets = ' cal_targets ]);
+    Eyelink('command', ['validation_samples = ' num2str(ncal_sample) ]); 
+    Eyelink('command', ['validation_sequence = ' cal_sequence  ] );
+    Eyelink('command', ['validation_targets = ' cal_targets ]);
+
+    %%% Tells the ET what data to record
+    Eyelink('Command', 'file_sample_data = LEFT,RIGHT,GAZE,DIAMETER');
+    Eyelink('Command', 'file_event_data = GAZE,GAZEREZ,DIAMETER,HREF,VELOCITY');
+    Eyelink('Command', 'file_event_filter = LEFT, RIGHT, FIXATION,SACCADE, BLINK, MESSAGE, BUTTON');
+end 
+   
+if ~isempty(ET_ON)
+    EyelinkDoTrackerSetup(el);
+end
+
+%%%% Drift correction:
+if ~isempty(ET_ON)
+
+    ETbox_rect = CenterRectOnPoint([0 0 params.ETbox_size_pix], centerX, centerY);
+
+    % Open a file to record to
+    tmpETfile = 'ET_tmp.edf';
+    Eyelink('openfile', tmpETfile);
+
+    %%%% Drift correction:
+    success = 0;
+    while success == 0
+        
+        % In fact, there's an internal while loop inside the eyelink
+        % driftcorrect code. Still, we need repeat driftcorrection until it
+        % succeeds. Without the loop, the trial can proceed with the ESC key
+        % press despite a poor fixation
+
+        if ~isempty(params.ShowETbox)
+            Screen('FrameOval', win, params.ETbox_color, ETbox_rect) ;%  [,penWidth]);
+        end
+        Screen('FrameOval', win, [0 0 0], params.Fixation.rect, params.Fixation.Width_pix)
+        Screen('FillOval', win, [255 0 0], params.Fixation.rect2 ); %  , s.Fixation.Width_pix
+        Screen('Flip',win);
+        success = EyelinkDoDriftCorrection(el, [], [], 0, 0); % You can't get out of this function unless there's a success or ESC
+        
+    end 
+    Eyelink('StartRecording');
+    eye_used = Eyelink('EyeAvailable');
+    
+end 
+        
+ETdur_per_trial = params.blockLength + [ 5 ];
+FrameRate = Screen('FrameRate', win); %  hz=Screen('FrameRate', w);
+max_ET_nframe = FrameRate * ETdur_per_trial;
+gazesamples = cell(length(experiment.condsShuffle));
+for i = 1:length(blockNum)
+    gazesamples{i}.x = nan(max_ET_nframe,1);
+    gazesamples{i}.y = nan(max_ET_nframe,1);
+    gazesamples{i}.pa = nan(max_ET_nframe,1);
+    gazesamples{i}.TS = nan(max_ET_nframe,1);
+    gazesamples{i}.D = nan(max_ET_nframe,1);
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Wait for trigger while displaying the fixation & set up
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+HideCursor;
+
+%%%% center location 
+xc = rect(3)/2; 
+yc = rect(4)/2 + params.vertOffset;
+
+%%%% circle fixation
+Screen('FillOval', w,[255 255 255], [xc-round(params.fixSize/2) yc-round(params.fixSize/2) xc+round(params.fixSize/2) yc+round(params.fixSize/2)]);
+Screen('FillOval', w,[0 0 0], [xc-round(params.fixSize/4) yc-round(params.fixSize/4) xc+round(params.fixSize/4) yc+round(params.fixSize/4)]);
+Screen(w, 'DrawText', 'Waiting for Backtick.', 10,10,[0 0 0]);
+Screen(w, 'DrawText', taskText, rect(3)-100,10,[0 0 0]);
+Screen(w, 'Flip', 0);
+
+%%%% gamma correction
+if params.gammaCorrect > 0
+    load 7T_Sam.mat;
+    Screen('LoadNormalizedGammaTable', screenNum, linearizedCLUT);
+end
+
+%%%% response listening 
+responseKeys = zeros(1,256);
+responseKeys(KbName('1!'))=1; % button box 1
+responseKeys(KbName('2@'))=1; % button box 2
+% responseKeys(KbName('3#'))=1; % button box 3
+% responseKeys(KbName('4$'))=1; % button box 4
+
+KbTriggerWait(53, deviceNumber);
+KbQueueCreate(deviceNumber, responseKeys);
+KbQueueStart();
+
+%%% flip
+flipInt=Screen('GetFlipInterval', w);
+slack = flipInt/2;
+
+
+%%%%%%%%%%%%%%%%%%%%%
+% EXPERIMENT START
+%%%%%%%%%%%%%%%%%%%%%
+
+Screen('FillRect', w, gray);
+
+%%%% circle fixation
+Screen('FillOval', w,[255 255 255], [xc-round(params.fixSize/2) yc-round(params.fixSize/2) xc+round(params.fixSize/2) yc+round(params.fixSize/2)]);
+Screen('FillOval', w,[0 0 0], [xc-round(params.fixSize/4) yc-round(params.fixSize/4) xc+round(params.fixSize/4) yc+round(params.fixSize/4)]);
+
+[vbl experiment.startRun FlipTimestamp Missed Beampos] = Screen('Flip', w); % starts timing
+
+for b = 1:numel(conds)
+    
+    gaze_exceeded=0;
+    abort=0;
+    gazex   = nan;
+    gazey   = nan;
+    gazeTS  = nan; %(1,max_ET_nframe);
+    gazeD   = nan; %(1,max_ET_nframe);
+    g_cnt=0;
+    
+    for t = 1:params.imsPerBlock
+        
+        % draw image
+        img = uint8(squeeze(experiment.condsShuffle(b).image));
+        imageShow = Screen('MakeTexture', w, img);  
+        Screen('BlendFunction', w, GL_ONE, GL_ZERO);
+        Screen('DrawTexture', w, imageShow,[],[(xc-params.imgWidth/2) (yc - params.imgWidth/2) (xc+params.imgWidth/2) (yc + params.imgWidth/2)]);
+
+        % draw character
+        l = randperm(numel(letters));
+        fixChar = letters(l(1));
+        Screen('FillOval', w,[255 255 255], [xc-round(params.fixSize/2) yc-round(params.fixSize/2) xc+round(params.fixSize/2) yc+round(params.fixSize/2)]);
+        DrawFormattedText(w, fixChar, 'center', 8+vertOffset+rect(4)/2, 0);
+        
+        flipTime = experiment.startRun + params.initialFixation + ((b-1)*(params.blockLength+params.IBI)) + ((t-1)*(params.stimDur+params.ISI)) - slack;
+        Screen('Flip', w, flipTime);
+        
+        if t == 1
+            startBlock = flipTime;
+        end
+        
+        % store target info if attn is on character
+        if experiment.attn == 0
+            if fixChar == 'O';
+                experiment.task.target = [experiment.task.target, 1];
+                experiment.task.target_time = [experiment.task.target_time, GetSecs - experiment.startRun];
+            elseif fixChar == 'K';
+                experiment.task.target = [experiment.task.target, 2];
+                experiment.task.target_time = [experiment.task.target_time, GetSecs - experiment.startRun];
+            end
+        end
+        
+        % ISI, draw fixation and flip
+        Screen('FillOval', w,[255 255 255], [xc-round(params.fixSize/2) yc-round(params.fixSize/2) xc+round(params.fixSize/2) yc+round(params.fixSize/2)]);
+        Screen('FillOval', w,[0 0 0], [xc-round(params.fixSize/4) yc-round(params.fixSize/4) xc+round(params.fixSize/4) yc+round(params.fixSize/4)]);
+        flipTime = flipTime + params.stimDur;
+        Screen('Flip', w, flipTime);
+        
+        %%%% task response
+        [pressed, firstPress]= KbQueueCheck();
+        
+
+        if experiment.attn == 1
+            
+            % remove all but first pressed key
+            nResponses = sum(firstPress > 0);
+            for response = 1:(nResponses-1)
+                firstPress(firstPress == max(firstPress)) = 0;
+            end
+            
+            %%%% animate/inanimate identification
+            if experiment.task.response(b) == 0 % dont overwrite after first press
+                if (pressed == 1) && ((firstPress(KbName('1!')) > 0) || (firstPress(KbName('2@')) > 0))
+                    if firstPress(KbName('1!')) > 0 
+                        experiment.task.response(b) = 1;
+                        experiment.task.response_time(b) = firstPress(KbName('1!')) - startBlock;
+                        if experiment.task.target(b) == 1
+                            experiment.task.accuracy = experiment.task.accuracy + 1/numel(conds);
+                            experiment.task.meanRT = ((experiment.task.meanRT*(b-1)) + experiment.task.response_time(b)) / b;
+                        end
+                    elseif firstPress(KbName('2@')) > 0
+                        experiment.task.response(b) = 2;
+                        experiment.task.response_time(b) = firstPress(KbName('2@')) - startBlock;
+                        if experiment.task.target(b) == 2
+                            experiment.task.accuracy = experiment.task.accuracy + 1/numel(conds);
+                            experiment.task.meanRT = ((experiment.task.meanRT*(b-1)) + experiment.task.response_time(b)) / b;
+                        end
+                    end
+                end
+            end
+            disp(sprintf('start of block = %f, response = %f, getSecs = %f', startBlock, experiment.task.response_time(b), GetSecs)); 
+            
+        else
+            
+            %%%% character identification
+            if (pressed == 1) && ((firstPress(KbName('1!')) > 0) || (firstPress(KbName('2@')) > 0))
+                if firstPress(KbName('1!')) > 0 
+                    experiment.task.response = [experiment.task.response, 1];
+                    experiment.task.response_time = [experiment.task.response_time, firstPress(KbName('1!')) - experiment.startRun];
+                elseif firstPress(KbName('2@')) > 0
+                    experiment.task.response = [experiment.task.response, 2]; 
+                    experiment.task.response_time = [experiment.task.response_time, firstPress(KbName('2@')) - experiment.startRun];
+                end
+            end
+
+            %%%% refresh queue for next character
+            KbQueueFlush();
+            
+        end
+    end
+    
+    %%%% refresh queue for next block
+    KbQueueFlush();
+    
+    gazesamples{b}.x = gazex(1:min([g_cnt max_ET_nframe]))';
+    gazesamples{b}.y = gazey(1:min([g_cnt max_ET_nframe]))';
+    gazesamples{b}.pa = gazepa(1:min([g_cnt max_ET_nframe]))';
+    gazesamples{b}.TS = gazeTS(1:min([g_cnt max_ET_nframe]))';
+    gazesamples{b}.D = gazeD(1:min([g_cnt max_ET_nframe]))';
+    
+    
+    Screen('FillOval', w,[255 255 255], [xc-round(params.fixSize/2) yc-round(params.fixSize/2) xc+round(params.fixSize/2) yc+round(params.fixSize/2)]);
+    Screen('FillOval', w,[0 0 0], [xc-round(params.fixSize/4) yc-round(params.fixSize/4) xc+round(params.fixSize/4) yc+round(params.fixSize/4)]);
+    flipTime = flipTime + params.ISI;
+    Screen('Flip', w, flipTime);
+        
+end
+
+WaitSecs(params.IBI + params.finalFixation);
+
+experiment.runTime = GetSecs - experiment.startRun;
+
+% analyse task performance for character task
+if experiment.attn == 0
+    responseTimes = experiment.task.response_time; % make copies as we are editing these
+    responses = experiment.task.response;
+    responseWindow = 1.5; % in seconds, responses later than this count as a miss
+    for t = 1:numel(experiment.task.target)
+        targetTime = experiment.task.target_time(t);
+        target = experiment.task.target(t);
+        experiment.task.hits(t) = 0; % default is a miss with RT of nan
+        experiment.task.RTs(t) = nan;
+        for r = 1:numel(responseTimes)
+            if ismember(responses(r),  target) && responseTimes(r) > targetTime % if response is correct and happened after target
+                rt = responseTimes(r)-targetTime;
+                if rt < responseWindow; % and if response happened within a second of target
+                    experiment.task.hits(t) = 1; % mark a hit
+                    experiment.task.RTs(t) = rt; % store the RT
+                    responseTimes(r) = []; % delete this response so it can't be reused
+                    responses(r) = [];
+                    break % stop looking for responses to this target
+                end
+            end
+        end
+    end
+    experiment.task.accuracy = (sum(experiment.task.hits)/numel(experiment.task.target_time));
+    experiment.task.meanRT = nanmean(experiment.task.RTs);
+end
+
+%%%%%%%%%
+% save  
+%%%%%%%%%
+
+savedir=strcat(experiment.root,'/data/');
+if exist(savedir,'dir') == 0
+    mkdir(savedir)
+end
+
+if ~exist(strcat(savedir,'/',subject),'dir')
+    mkdir(strcat(savedir,'/',subject));
+end
+savename=strcat(savedir,subject,'/',subject,'_run',num2str(experiment.runNum),'_attn',num2str(experiment.attn),'_',experiment.date,'.mat');    
+
+save(savename,'experiment','params','gaze_samples');
+
+KbQueueRelease();
+ShowCursor;
+Screen('Close');
+Screen('CloseAll');
+fprintf('Accuracy: (%.f)\nMean RT: (%f)', 100*experiment.task.accuracy, experiment.task.meanRT);
+
+
+
+

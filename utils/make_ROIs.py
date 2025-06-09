@@ -49,7 +49,7 @@ def make_ROIs(subjects, overwrite):
         fs_subj_dir = f'{os.environ["SUBJECTS_DIR"]}/{fs_subj}'
 
         # get retinotopy estimates
-        get_wang_atlas(fs_subj)  # automatically skips if done
+        #get_wang_atlas(fs_subj)  # automatically skips if done
 
     # native space ROIs
     for subject in subjects:
@@ -163,10 +163,3 @@ def make_ROIs(subjects, overwrite):
                 os.system(f'mri_synthstrip -i {ref_func} -m {mask_path} -g')
 
 
-if __name__ == "__main__":
-
-    overwrite = False
-    for exp in ['exp1','exp2']:
-        os.chdir(f'{PROJ_DIR}/in_vivo/fMRI/{exp}')
-        subjects = json.load(open("participants.json", "r+"))
-        make_ROIs(subjects, overwrite)

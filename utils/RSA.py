@@ -21,7 +21,6 @@ from sklearn.metrics import euclidean_distances
 from rsatoolbox.util.searchlight import get_volume_searchlight
 import pandas as pd
 import matplotlib
-from sympy.codegen.ast import continue_
 from tqdm import tqdm
 from joblib import Parallel, delayed
 import warnings
@@ -243,12 +242,12 @@ def plot_RSM_models(overwrite_plots):
                                            fancy=True)
 
 
-def get_responses(subject, region, task, space):
+def get_responses(subject, region, task):
 
     thr = 3.1
     cond_labels = CFG.cond_labels['exp1']
     n_conds = len(cond_labels)
-    subj_dir = f'derivatives/FEAT/sub-{subject}/subject-wise_space-{space}'
+    subj_dir = f'derivatives/FEAT/sub-{subject}/subject-wise'
 
     # load localizer contrast map
     loc_path = (f'{subj_dir}/task-{task}_all-runs.gfeat/'
@@ -256,10 +255,7 @@ def get_responses(subject, region, task, space):
     loc_data = nib.load(loc_path).get_fdata().flatten()
 
     # load roi mask
-    if space == 'standard':
-        roi_dir = f'derivatives/ROIs/MNI152_2mm'
-    else:
-        roi_dir = f'derivatives/ROIs/sub-{subject}/func_space'
+    roi_dir = f'derivatives/ROIs/MNI152_2mm'
     roi_path = f'{roi_dir}/{region}.nii.gz'
     roi_data = nib.load(roi_path).get_fdata().flatten()
     n_voxels_roi = np.count_nonzero(roi_data)
@@ -351,8 +347,8 @@ class RSA:
 
         else:
 
-            imx = f'{PROJ_DIR}/data/in_vivo/fMRI/RSM_pictures_x.png'
-            imy = f'{PROJ_DIR}/data/in_vivo/fMRI/RSM_pictures_y.png'
+            imx = f'{PROJ_DIR}/figures/RSM_pictures_x.png'
+            imy = f'{PROJ_DIR}/figures/RSM_pictures_y.png'
             picx = plt.imread(imx)
             picy = plt.imread(imy)
             fig, unused_ax = plt.subplots(figsize=(7, 5.25))
@@ -472,13 +468,11 @@ class RSA:
             else:
                 analyses.append('occlusion_invariance')
                 if ea == eb:
-                    levels.append(
-                        'EsUb') if oa == 'none' and ob == 'none' else levels.append(
-                        'EsU1')
+                    levels.append('EsUb') if oa == 'none' and ob == 'none' \
+                        else levels.append('EsU1')
                 else:
-                    levels.append(
-                        'EdUb') if oa == 'none' and ob == 'none' else levels.append(
-                        'EdU1')
+                    levels.append( 'EdUb') if oa == 'none' and ob == 'none' \
+                        else levels.append('EdU1')
 
         self.RSM_table = pd.DataFrame({
             'exemplar_a': exemplars_a,
@@ -503,83 +497,25 @@ class RSA:
     def calculate_occlusion_robustness(self):
 
         self.occlusion_robustness = pd.DataFrame()
-
         for analysis, params in CFG.occlusion_robustness_analyses.items():
-            values = [self.RSM_table['similarity'][
-                          self.RSM_table['level'] == level].mean() for level in
-                      params['conds']]
 
             # calculate index
-            A, B, C, D = values
-            E = np.mean([C, D])
+            values = [self.RSM_table['similarity'][
+                          self.RSM_table['level'] == level].mean() for level in
+                      params['conds'][:2]]
+            index_value = values[1] / values[0]
 
-            for index_type in ['norm', 'prop', 'base', 'base2', 'rel']:
-                if index_type == 'norm':
-                    index_value = 1 - (A - B) / (abs(A) + abs(B))
-                elif index_type == 'prop':
-                    index_value = B / A
-                elif index_type == 'base':
-                    index_value = (B - D) / (A - D)
-                elif index_type == 'base2':
-                    index_value = (B - E) / (A - E)
-                elif index_type == 'rel':
-                    index_value = ((B - D) - (C - D)) / (A - D)
-
-                self.occlusion_robustness = pd.concat(
-                    [self.occlusion_robustness, pd.DataFrame({
-                        'analysis': [analysis],
-                        'subtype': [index_type],
-                        'index': [params['index_label']],
-                        'value': [index_value],
-                    })]).reset_index(drop=True)
-
-    def fit_models(self):
-
-        # regression models
-        self.model_fits = pd.DataFrame()
-        for model_label, RSM_model in CFG.RSM_models['matrices'].items():
-
-            # flatten matrices
-            model_flat = RSM_model.flatten()
-            similarity_flat = self.RSM_table.similarity.values
-
-            # remove elements where model is nan
-            model_flat_finite = model_flat[np.isfinite(model_flat)]
-            similarity_flat_finite = similarity_flat[np.isfinite(model_flat)]
-
-            # run regression
-            regr = LinearRegression()
-            fit = regr.fit(model_flat_finite.reshape(-1, 1),
-                           similarity_flat_finite.reshape(-1, 1)).coef_[0][0]
-            pred = regr.predict(model_flat_finite.reshape(-1, 1))
-            mse = mean_squared_error(pred, similarity_flat_finite)
-
-            self.model_fits = pd.concat(
-                [self.model_fits, pd.DataFrame({'model': [model_label],
-                                                'beta': [fit],
-                                                'mse': [mse]})]).reset_index(
-                drop=True)
-
-        # compare exemplar (occluded only) and occluder position model fits
-        exem = self.model_fits[
-            self.model_fits.model == 'exemplar_bothocc'].beta.item()
-        occl = self.model_fits[
-            self.model_fits.model == 'occluder_position'].beta.item()
-        self.exemplar_v_occluder_position = (exem - occl) / (exem + occl)
-
-        # compare exemplar (< 2 occ) and occluder presence model fits
-        exem = self.model_fits[
-            self.model_fits.model == 'exemplar_lt2occ'].beta.item()
-        occl = self.model_fits[
-            self.model_fits.model == 'occluder_presence_lt2occ'].beta.item()
-        self.exemplar_v_occluder_presence = (exem - occl) / (exem + occl)
-
+            self.occlusion_robustness = pd.concat(
+                [self.occlusion_robustness, pd.DataFrame({
+                    'analysis': [analysis],
+                    'subtype': ['prop'],
+                    'index': [params['index_label']],
+                    'value': [index_value],
+                })]).reset_index(drop=True)
 
     def analyse(self):
-
         self.RSM_to_table()
         self.calculate_occlusion_robustness()
-        self.fit_models()
 
 
 class RSA_dataset:
@@ -690,114 +626,45 @@ class RSA_dataset:
         export_legend(legend, filename=f'{op.dirname(outpath)}/legend.pdf')
 
 
-    def calculate_RSM(self, norm, norm_method, similarity):
+    def calculate_RSM(self):
 
         responses = self.responses
         n_exem, n_img, n_attn, n_occ = CFG.n_exem, CFG.n_img, 2, 3
         n_splits, n_reps, n_conds, n_chan = self.responses.shape
 
-        if similarity != 'crossnobis':
+        # calculate mean and std for normalization
+        norm_data = {
+            'mean': np.tile(np.mean(responses, axis=2, keepdims=True),
+                            (1, 1, n_conds, 1)),
+            'std': np.tile(np.std(responses, axis=2, keepdims=True),
+                           (1, 1, n_conds, 1))
+        }
 
-            # calculate mean and std for normalization
-            # if left as is, these will have no effect, i.e. no normalization
-            norm_data = {'mean': np.zeros_like(responses),
-                         'std': np.ones_like(responses)}
+        # remove channels with no variance
+        if (norm_data['std'] == 0).any():
+            img_dim = len(norm_data['std'].shape) - 2
+            good_channels = ~np.all(norm_data['std'] == 0, axis=img_dim)
+            while len(good_channels.shape) > 1:
+                good_channels = good_channels.min(axis=-2)
+            norm_data['std'] = norm_data['std'][..., good_channels]
+            norm_data['mean'] = norm_data['mean'][..., good_channels]
+            responses = responses[..., good_channels]
 
-            for op in norm_data:
+        # apply normalization
+        responses_norm = responses - norm_data['mean']
+        responses_norm /= norm_data['std']
 
-                np_func = getattr(np, op)
+        # calculate RSM for each split of data
+        RSMs_split = np.empty((n_splits, n_conds, n_conds))
+        for split in range(n_splits):
+            RSMs_split[split] = np.corrcoef(responses_norm[split, 0],
+                                            responses_norm[split, 1]
+                                            )[:n_conds, n_conds:]
 
-                # use summary statistics across all conditions
-                if norm == 'all-conds':
-                    norm_data[op] = np.tile(np_func(
-                        responses, axis=2, keepdims=True), (1, 1, n_conds, 1))
+        # mean across splits
+        RSM = np.mean(RSMs_split, axis=0)
 
-                # use stats for each occluder condition
-                elif norm == 'occluder':
-                    for occ in range(n_occ):
-                        norm_data[op][:, :, occ::n_occ, :] = np.tile(np_func(
-                            responses[:, :, occ::n_occ, :], axis=2,
-                            keepdims=True), (1, 1, n_exem, 1))
-
-                # use stats for unoccluded images only
-                elif norm == 'unoccluded':
-                    norm_data[op] = np.tile(
-                        np_func(responses[:, :, :n_occ, :], axis=2,
-                                keepdims=True), (1, 1, n_img, 1))
-
-            # remove channels with no variance
-
-            if norm_method == 'z-score' and (norm_data['std'] == 0).any():
-
-                img_dim = len(norm_data['std'].shape) - 2
-                good_channels = ~np.all(norm_data['std'] == 0, axis=img_dim)
-                while len(good_channels.shape) > 1:
-                    good_channels = good_channels.min(axis=-2)
-                norm_data['std'] = norm_data['std'][..., good_channels]
-                norm_data['mean'] = norm_data['mean'][..., good_channels]
-                responses = responses[..., good_channels]
-
-                #n_chan_final = good_channels.sum()
-                #n_chan_removed = n_chan - n_chan_final
-                #perc = n_chan_removed / n_chan * 100
-                #print(
-                #    f'{n_chan_removed}/{n_chan} ({int(perc)}%) channels '
-                #    f'removed as they have zero variance')
-
-            # apply normalization
-            responses_norm = responses - norm_data['mean']
-            if norm_method == 'z-score':
-                responses_norm /= norm_data['std']
-
-            # calculate RSMs
-            RSMs_split = np.empty((n_splits, n_conds, n_conds))
-
-            for split in range(n_splits):
-
-                if similarity == 'pearson':
-                    RSMs_split[split] = np.corrcoef(
-                        responses_norm[split, 0], responses_norm[split, 1])[
-                                        :n_conds, n_conds:]
-
-                elif similarity == 'spearman':
-                    RSMs_split[split] = spearmanr(
-                        responses_norm[split, 0], responses_norm[split, 1],
-                        axis=1).correlation[:n_conds, n_conds:]
-
-                # Euclidean distance, normalized by number of channels
-                # Equivalent to the Euclidean method in rsatoolbox
-                if similarity == 'euclidean':
-                    RSMs_split[split] = np.sqrt(euclidean_distances(
-                        responses_norm[split, 0], responses_norm[split, 1],
-                        squared=True) / n_chan)
-
-            # mean across splits
-            RSM = np.mean(RSMs_split, axis=0)
-
-
-        else:
-
-            # crossnobis
-            assert len(self.initial_shape) == 3
-            responses_flat = self.responses.reshape((-1, n_chan))
-            conds = np.array([f'{l + 1:02}_{label}' for l, label in
-                              enumerate(CFG.cond_labels['exp1'])] * n_reps)
-            runs = np.repeat(np.arange(n_reps), n_conds)
-            obs_des = {'conds': conds, 'runs': runs}
-            chn_des = {'voxels': np.array(
-                [f'voxel_{x:06}' for x in np.arange(n_chan)])}
-            dataset = rsatoolbox.data.Dataset(
-                measurements=responses_flat,
-                obs_descriptors=obs_des,
-                channel_descriptors=chn_des)
-            noise = rsatoolbox.data.noise.prec_from_measurements(
-                dataset, obs_desc='conds', method='shrinkage_diag')
-            rdm = rsatoolbox.rdm.calc_rdm(
-                dataset, descriptor='conds', method='crossnobis', noise=noise,
-                cv_descriptor='runs')
-            RSM = rdm.get_matrices()[0]
-
-        return RSA(RSM, similarity)
+        return RSA(RSM)
     
 
 def compare_regions(
@@ -805,7 +672,6 @@ def compare_regions(
 
     exp = op.basename(os.getcwd())
     subjects = CFG.subjects[exp]
-    subjects_final = CFG.subjects_final[exp]
     fw_base, fw_mult, fh = .5, .4, 2.5  # figure size
 
     # conditions-wise similarities
@@ -836,12 +702,12 @@ def compare_regions(
                 'mean').dropna().reset_index()
 
             # reduce to final subject sample and get group means, sems
-            df_summary = df[df.subject.isin(subjects_final)].drop(
-                columns=['subject']).groupby(
-                ['analysis', 'level', 'region']).agg(
-                ['mean', 'sem']).dropna().reset_index()
-            df_summary.columns = [
-                'analysis', 'level', 'region', 'value','error']
+            df_summary = (df
+                .drop(columns=['subject'])
+                .groupby(['analysis', 'level', 'region'])
+                .agg(['mean', 'sem'])
+                .dropna().reset_index())
+            df_summary.columns = ['analysis', 'level', 'region', 'value','error']
 
             # remove regions for which summary statistics cannot be calculated
             df = df[df.region.isin(df_summary.region.unique())].reset_index(
@@ -871,10 +737,9 @@ def compare_regions(
                 plot_df.level = pd.Categorical(
                     plot_df.level, categories=params['conds'], ordered=True)
                 plot_df.sort_values(['region', 'level'], inplace=True)
-                ylabel = CFG.similarities[op.basename(analysis_dir)]
                 p_labels = [CFG.regions[r] for r in reg_ord]
                 clustered_barplot_panels(
-                    plot_df, outpath, params, ylabel, y_var='similarity',
+                    plot_df, outpath, params, "correlation ($\it{r}$)", y_var='similarity',
                     p_order=reg_ord, p_labels=p_labels)
 
         # region-wise plot for each region_set
@@ -894,7 +759,7 @@ def compare_regions(
                 plot_df.level = pd.Categorical(
                     plot_df.level, categories=params['conds'], ordered=True)
                 plot_df.sort_values(['region','level'], inplace=True)
-                ylabel = CFG.similarities[op.basename(analysis_dir)]
+                ylabel = "correlation ($\it{r}$)"
                 params['ylims'] = [-.05, .25] if (analysis ==
                                                  'object_completion') else \
                     [-.05, .32]
@@ -923,7 +788,7 @@ def compare_regions(
                 # get stats and calculate z-scores
                 stats_df = df[
                     (df.region.isin(regions)) &
-                    (df.subject.isin(subjects_final))].copy(
+                    (df.subject.isin(subjects))].copy(
                     deep=True).groupby(['subject','region','level']).agg(
                     'mean', numeric_only=True).dropna().reset_index()
                 stats_df['similarity_z'] = np.arctanh(
@@ -1036,7 +901,7 @@ def compare_regions(
             cond_sims = pd.read_csv(f'{out_dir}/cond-wise_sims.csv')
             df = pd.DataFrame()
             for level, subject_sample in zip(
-                    ['ind', 'group'], [subjects_final, ['group']]):
+                    ['ind', 'group'], [subjects, ['group']]):
                 for region in CFG.regions:
                     df_region = pd.DataFrame()
                     for subject in subject_sample:
@@ -1054,7 +919,7 @@ def compare_regions(
                     if len(df_region) and 'prop2' not in df_region.subtype.unique():
                         cond_sims_groupmean = (cond_sims[
                             (cond_sims.region == region) &
-                            (cond_sims.subject.isin(subjects_final))]
+                            (cond_sims.subject.isin(subjects))]
                             .groupby(['level', 'region'])
                             .agg({'similarity': 'mean'})
                             .reset_index())
@@ -1088,7 +953,7 @@ def compare_regions(
         df = pd.read_csv(indices_path)
         for (level, subject_sample), subtype, (region_set, regions) in \
                 itertools.product(
-                    zip(['ind', 'group'], [subjects_final, ['group']]),
+                    zip(['ind', 'group'], [subjects, ['group']]),
                     df.subtype.unique(), CFG.region_sets.items()):
             outpath = (f'{out_dir}/{region_set}/{params["index_label"]}'
                        f'_{subtype}_{level}.png')
@@ -1216,7 +1081,7 @@ def compare_regions(
                     (df.level == 'ind') &
                     (df.subtype == subtype) &
                     (df.region.isin(regions)) &
-                    (df.subject.isin(subjects_final))].copy(deep=True).drop(
+                    (df.subject.isin(subjects))].copy(deep=True).drop(
                     columns=['level','subtype','index'])
                 try:
                     # t-tests against 0 and 1
@@ -1247,187 +1112,6 @@ def compare_regions(
                 except:
                     pass
 
-
-    # regression models
-
-    # data
-    regression_path = f'{analysis_dir}/regression/regression.csv'
-    os.makedirs(op.dirname(regression_path), exist_ok=True)
-    if not op.isfile(regression_path) or overwrite_data:
-        print(f'Collating regression results...')
-        df = pd.DataFrame()
-        for level, subject_sample in zip(['ind', 'group'],
-                                         [subjects_final, ['group']]):
-            for region, subject in itertools.product(
-                    CFG.regions, subject_sample):
-                temp = RSAs[region][subject]
-                if temp is not None:
-                    temp = temp.model_fits
-                    temp['level'] = level
-                    temp['region'] = region
-                    temp['subject'] = subject
-                    df = pd.concat([df, temp])
-        df.to_csv(regression_path, index=False)
-    else:
-        df = pd.read_csv(regression_path)
-    df['model'] = df['model'].astype('category').cat.reorder_categories(
-        CFG.RSM_models['matrices'].keys())
-
-    # plots
-    for region_set, regions in CFG.region_sets.items():
-        for level, subject_sample in zip(['ind', 'group'],
-                                         [subjects_final, ['group']]):
-
-            outpath_all = (f'{analysis_dir}/regression/{region_set}/model_fits'
-                        f'_{level}.png')
-            outpath_sel = (f'{analysis_dir}/regression/{region_set}/model_fits'
-                        f'_{level}_select.png')
-            if not op.isfile(outpath_sel) or overwrite_plots:
-                print(f'Plotting {level} regression results in {region_set}...')
-                plot_df = df[(df.level == level) &
-                             (df.region.isin(regions)) &
-                             (df.subject.isin(subject_sample))]
-                if level == 'ind':
-                    plot_df = plot_df.drop(
-                        columns=['subject', 'mse','level']).groupby(
-                        ['model', 'region']).agg(['mean', 'sem']).dropna(
-                        ).reset_index()
-                    plot_df.columns = ['level', 'region', 'value', 'error']
-                else:
-                    plot_df = plot_df.drop(columns=['level']).rename(columns={
-                        'model': 'level', 'beta': 'value', 'mse': 'error'}
-                        ).copy( deep=True)
-
-                reg_ord = [r for r in regions if r in plot_df.region.unique()]
-                plot_df.region = pd.Categorical(
-                    plot_df.region, categories=reg_ord, ordered=True)
-                plot_df.level = pd.Categorical(
-                    plot_df.level, categories=list(CFG.RSM_models[
-                        'matrices'].keys()), ordered=True)
-                plot_df.sort_values(['region', 'level'], inplace=True)
-                x_tick_labels = [CFG.regions[r] for r in reg_ord]
-
-                # all models
-                clustered_barplot(
-                    plot_df, outpath_all, CFG.RSM_models,
-                    x_tick_labels=x_tick_labels,
-                    figsize=(fw_base + len(regions)*fw_mult, fh))
-
-                # selected models
-                dfs = plot_df[plot_df['level'].isin(CFG.RSM_models['final_set'])]
-                clustered_barplot(
-                    dfs, outpath_sel, CFG.RSM_models, x_tick_labels=x_tick_labels,
-                    figsize=(fw_base + len(regions)*fw_mult, fh))
-
-    # stats
-    for region_set, regions in CFG.region_sets.items():
-        outpath = (f'{analysis_dir}/regression/{region_set}/'
-                   f'model_fits_ind_anova.csv')
-        if not op.isfile(outpath) or overwrite_stats:
-            print(f'Performing stats on regression results in {region_set}...')
-            stats_df = df[(df.level == 'ind') &
-                          (df.region.isin(regions)) &
-                          (df.subject.isin(subjects_final))].copy(
-                deep=True).drop(columns=['level','mse'])
-            anova = pg.rm_anova(
-                dv='beta', within=['model', 'region'], subject='subject',
-                data=stats_df, detailed=True)
-            anova.to_csv(outpath)
-            post_hocs = pg.pairwise_tests(
-                dv='beta', within=['region', 'model'], subject='subject',
-                data=stats_df, padjust='holm', return_desc=True,
-                effsize='cohen')
-            post_hocs.to_csv(outpath.replace('anova', 'posthocs'))
-
-
-    # occluder versus exemplar regression indices
-    contrasts = ['exemplar_v_occluder_presence',
-                 'exemplar_v_occluder_position']
-    titles = ['object identity versus occluder presence',
-              'object identity versus occluder position']
-
-    # data
-    reg_indices_path = f'{analysis_dir}/regression/regression_indices.csv'
-    if (not op.isfile(reg_indices_path) or overwrite_data):
-        print(f'Collating regression indices...')
-        df = pd.DataFrame()
-        for level, subject_sample in zip(['ind', 'group'],
-                                            [subjects_final, ['group']]):
-            for region, subject, contrast in itertools.product(
-                        CFG.regions, subject_sample, contrasts):
-                temp = RSAs[region][subject]
-                if temp is not None:
-                    value = getattr(temp, contrast)
-                    df = pd.concat([df, pd.DataFrame({
-                        'level': [level],
-                        'region': [region],
-                        'subject': [subject],
-                        'contrast': [contrast],
-                        'value': value})])
-        df.to_csv(reg_indices_path, index=False)
-
-    # plots
-    df = pd.read_csv(reg_indices_path)
-    for (level, subject_sample), (contrast, title), (region_set, regions) in (
-            itertools.product(
-                zip(['ind', 'group'], [subjects_final, ['group']]),
-                zip(contrasts, titles), CFG.region_sets.items())):
-        outpath = (f'{analysis_dir}/regression/{region_set}/'
-                   f'{contrast}_{level}.png')
-        if not op.isfile(outpath) or overwrite_plots:
-            print(f'Plotting {level} regression indices for {title} in '
-                  f'{region_set}...')
-
-            plot_df = df[(df.level == level) &
-                         (df.contrast == contrast) &
-                         (df.region.isin(regions)) &
-                         (df.subject.isin(subject_sample))].copy(
-                deep=True).drop(columns=['level', 'contrast','subject'])
-
-            if level == 'ind':
-                plot_df = (plot_df.groupby(['region']).agg(
-                        ['mean', 'sem']).dropna().reset_index())
-                plot_df.columns = ['region','value', 'error']
-            else:
-                plot_df = plot_df.rename(columns={'model': 'level'})
-                plot_df['error'] = np.nan
-
-            reg_ord = [r for r in regions if r in plot_df.region.unique()]
-            plot_df.region = pd.Categorical(
-                plot_df.region, categories=reg_ord, ordered=True)
-            plot_df.sort_values('region', inplace=True)
-            x_tick_labels = [CFG.regions[r] for r in reg_ord]
-            line_plot(plot_df, outpath, ylabel='object bias',
-                ceiling=[1], floor=[-1], ylims=(-1.3, 1.3), hline=0,
-                yticks=(-1,0,1), x_tick_labels=x_tick_labels,
-                figsize=(fw_base + len(regions)*fw_mult, fh), title=title)
-
-    # stats
-    for (contrast, title), (region_set, regions) in itertools.product(
-            zip(contrasts, titles), CFG.region_sets.items()):
-        outpath = (f'{analysis_dir}/regression/{region_set}/'
-                       f'{contrast}_ind_anova.csv')
-        if not op.isfile(outpath) or overwrite_stats:
-            print(f'Performing stats on regression indices for {title} in '
-                  f'{region_set}...')
-            try:
-                stats_df = df[(df.level == 'ind') &
-                              (df.contrast == contrast) &
-                              (df.region.isin(regions)) &
-                              (df.subject.isin(subjects_final))].copy(
-                    deep=True).drop(columns=['level', 'contrast'])
-                anova = pg.rm_anova(
-                    dv='value', within='region', subject='subject',
-                    data=stats_df, detailed=True)
-                anova.to_csv(outpath)
-                post_hocs = pg.pairwise_tests(
-                    dv='value', within='region', subject='subject',
-                    data=stats_df, padjust='holm', return_desc=True,
-                    effsize='cohen')
-                post_hocs.to_csv(outpath.replace('anova', 'posthocs'))
-            except:
-                pass
-
     # calculate noise ceiling
     new_results = False
     for region in df.region.unique():
@@ -1440,7 +1124,7 @@ def compare_regions(
             print(f'Calculating noise ceiling for {region}...')
             new_results = True
             subject_RSMs = pd.DataFrame()
-            for subject in subjects_final:
+            for subject in subjects:
                 temp = RSAs[region][subject]
                 if temp is not None:
                     temp = temp.RSM_table
@@ -1491,7 +1175,7 @@ def compare_regions(
         pkl.dump(RSAs, open(f'{analysis_dir}/RSA.pkl', 'wb'))
 
 
-def stats_exp2(space, norm, norm_method, similarity, overwrite):
+def stats_exp2(overwrite):
 
 
     for analysis, params in CFG.occlusion_robustness_analyses.items():
@@ -1503,9 +1187,7 @@ def stats_exp2(space, norm, norm_method, similarity, overwrite):
         # data
         df = pd.DataFrame()
         for attn, attn_path in zip(CFG.attns, CFG.attns_path):
-            indices_path = (f'derivatives/RSA/occlusion{attn_path}_space'
-                            f'-{space}/norm-{norm}_{norm_method}/{similarity}/'
-                            f'{analysis}/indices.csv')
+            indices_path = (f'derivatives/RSA/indices.csv')
             indices = pd.read_csv(indices_path)
             indices['attn'] = attn
             df = pd.concat([df, indices])
@@ -1517,14 +1199,14 @@ def stats_exp2(space, norm, norm_method, similarity, overwrite):
             outpath = (f'{out_dir}/{region_set}/{params["index_label"]}'
                        f'_{subtype}_ind_anova.csv')
             os.makedirs(op.dirname(outpath), exist_ok=True)
-            if not op.isfile(outpath) or True:#overwrite:
+            if not op.isfile(outpath) or overwrite:
                 print(f'Performing stats on {analysis} indices ({subtype}) in'
                       f' {region_set}...')
                 stats_df = df[
                     (df.level == 'ind') &
                     (df.subtype == subtype) &
                     (df.region.isin(regions)) &
-                    (df.subject.isin(CFG.subjects_final['exp2']))].copy(deep=True).drop(
+                    (df.subject.isin(CFG.subjects['exp2']))].copy(deep=True).drop(
                     columns=['level', 'subtype', 'index'])
                 try:
 
@@ -1573,8 +1255,7 @@ def stats_exp2(space, norm, norm_method, similarity, overwrite):
         df = pd.DataFrame()
         for attn, attn_path in zip(CFG.attns, CFG.attns_path):
             sims_path = (
-                f'derivatives/RSA/occlusion{attn_path}_space'
-                f'-{space}/norm-{norm}_{norm_method}/{similarity}/'
+                f'derivatives/RSA/occlusion{attn_path}/'
                 f'{analysis}/cond-wise_sims.csv')
             sims = pd.read_csv(sims_path)
             sims['attn'] = attn
@@ -1589,7 +1270,7 @@ def stats_exp2(space, norm, norm_method, similarity, overwrite):
                 stats_df = (df[
                     (df.level.isin(['EsOs', 'EsOd', 'EsUb', 'EsU1'])) &
                     (df.region.isin(regions)) &
-                    (df.subject.isin(CFG.subjects_final['exp2']))]
+                    (df.subject.isin(CFG.subjects['exp2']))]
                     .copy(deep=True))
                 stats_df['similarity_z'] = np.arctanh(stats_df['similarity'])
                 stats_df = stats_df.drop(columns=['similarity'])
@@ -1661,20 +1342,13 @@ def stats_exp2(space, norm, norm_method, similarity, overwrite):
                     pass
 
 
-def RSA_ROI(responses_dir, norm, norm_method,
-            similarity, overwrite_analyses, overwrite_plots, overwrite_stats):
+def RSA_ROI(responses_dir, overwrite_analyses, overwrite_plots, overwrite_stats):
 
     exp = 'exp1' if 'exp1' in os.getcwd() else 'exp2'
     subjects = CFG.subjects[exp]
-    subjects_final = CFG.subjects_final[exp]
     responses = pkl.load(open(f'{responses_dir}/responses.pkl', 'rb'))
     task = op.basename(responses_dir).split('_')[0]
-    similarity_label = CFG.similarities[similarity]
-
-    norm_dir = f'norm-{norm}'
-    if norm != 'none':
-        norm_dir += f'_{norm_method}'
-    analysis_dir = f'{responses_dir}/{norm_dir}/{similarity}'
+    analysis_dir = f'{responses_dir}'
     os.makedirs(analysis_dir, exist_ok=True)
 
     RSA_path = f'{analysis_dir}/RSA.pkl'
@@ -1698,8 +1372,7 @@ def RSA_ROI(responses_dir, norm, norm_method,
 
             if subject not in RSAs[region]:
 
-                print(f'Performing ROI-wise RSA | {region} | {subject} | '
-                      f'norm-{norm} | {norm_method} | {similarity}')
+                print(f'Performing ROI-wise RSA | {region} | {subject}')
 
                 new_result = new_results = True
 
@@ -1715,26 +1388,21 @@ def RSA_ROI(responses_dir, norm, norm_method,
 
                         # calculate RSM
                         print('Calculating RSM...')
-                        subject_RSA = subject_data.calculate_RSM(
-                            norm=norm,
-                            norm_method=norm_method,
-                            similarity=similarity)
+                        subject_RSA = subject_data.calculate_RSM()
                         subject_RSA.analyse()
 
                 else:
 
                     ind_RSMs = [
                         RSAs[region][s].RSM for s in \
-                        subjects_final if RSAs[region][s] \
+                        subjects if RSAs[region][s] \
                         is not None]
 
                     # calculate RSM
                     print(f'Calculating RSM...')
                     if len(ind_RSMs):
-                        subject_RSM = np.mean(np.array(ind_RSMs),
-                                              axis=0)
-                        subject_RSA = RSA(RSM=subject_RSM,
-                                        similarity=similarity)
+                        subject_RSM = np.mean(np.array(ind_RSMs), axis=0)
+                        subject_RSA = RSA(RSM=subject_RSM)
                         subject_RSA.analyse()
 
                 RSAs[region][subject] = subject_RSA
@@ -1753,7 +1421,7 @@ def RSA_ROI(responses_dir, norm, norm_method,
                                      title=plot_title,
                                      labels=CFG.cond_labels['exp1'],
                                      outpath=outpath,
-                                     measure=similarity_label)
+                                     measure="correlation ($\it{r}$)")
 
             # MDS plots
             outpath = f'{analysis_dir}/MDS/{file_name}'
@@ -1773,220 +1441,116 @@ def RSA_ROI(responses_dir, norm, norm_method,
     compare_regions(RSAs, analysis_dir, ow_data, ow_plots, overwrite_stats)
 
 
-def RSA_searchlight(task, space, norm, norm_method,
-            similarity, num_procs, index_level, subtype, overwrite):
+def RSA_searchlight(task, num_procs, index_level, subtype, overwrite):
 
+    """
+    To save on compute during the searchlight, we calculate the OCI entirely
+    from the group mean RSM. This gives the same group mean OCI as if we
+    calculated it at the individual level and took the mean across
+    participants.
+    """
 
-    exp = 'exp1' if 'exp1' in os.getcwd() else 'exp2'
-    subjects = CFG.subjects_final[exp]
-    norm_dir = f'norm-{norm}'
-    if norm != 'none':
-        norm_dir += f'_{norm_method}'
-    analysis_dir = (f'derivatives/RSA_searchlight/task-{task}_space-{space}/'
-               f'{norm_dir}/{similarity}/{subtype}')
+    subjects = CFG.subjects['exp1']
+    out_dir = f'derivatives/RSA_searchlight'
+    out_path = f'{out_dir}/completion_group.nii.gz'
 
-    # completion calculated at individual level
-    if index_level == 'ind':
-        for s, subject in enumerate(subjects):
+    if not op.isfile(out_path) or overwrite:
 
-            out_dir = f'{analysis_dir}/sub-{subject}'
-            out_path = f'{out_dir}/completion.nii.gz'
+        print(f'Performing searchlight RSA...')
 
-            if not op.isfile(out_path) or overwrite:
+        os.makedirs(out_dir, exist_ok=True)
 
-                print(f'Performing searchlight RSA | derivatives | {task} | '
-                      f'{space} space | {subject} | norm-{norm} | '
-                      f'{norm_method} | {similarity}')
+        # get voxels for which most subjects (>= 5) have data
+        brain_mask_path = f'{out_dir}/FOV_mask.nii.gz'
+        if not op.isfile(brain_mask_path):
+            ind_masks = [(
+                f'derivatives/FEAT/sub-{subj}/subject-wise/'
+                f'/task-{task}_all-runs.gfeat/cope1.feat/mask.nii.gz')
+                for subj in subjects]
+            cmd = f'fslmaths ' + ' -add '.join(ind_masks)
+            cmd += f' -thr 5 -bin {brain_mask_path}'
+            os.system(cmd)
+        brain_mask = nib.load(brain_mask_path)
+        header, affine = brain_mask.header, brain_mask.affine
+        brain_mask_3D = brain_mask.get_fdata()
+        vol_dims = brain_mask_3D.shape
+        brain_mask_2D = brain_mask_3D.flatten()
+        n_vox_vol = np.prod(vol_dims)
 
-                os.makedirs(out_dir, exist_ok=True)
+        # find centers and neighbors within flattened tensor
+        radius = 3
+        centers, neighbors = get_volume_searchlight(
+            brain_mask_3D, radius=radius, threshold=.4)
+        pkl.dump({'centers': centers, 'neighbors': neighbors},
+                 open(f'{out_dir}/sl_params.pkl', 'wb'))
 
-                # load brain mask
-                if space == 'func':
-                    brain_mask_path = (f'derivatives/ROIs/sub-{subject}/'
-                                       f'func_space/brain_mask.nii.gz')
-                else:
-                    brain_mask_path = (f'derivatives/ROIs/MNI152_2mm/'
-                                       f'brain_mask.nii.gz')
-                brain_mask = nib.load(brain_mask_path)
-                header, affine = brain_mask.header, brain_mask.affine
-                brain_mask_3D = brain_mask.get_fdata()
-                vol_dims = brain_mask_3D.shape
-                brain_mask_2D = brain_mask_3D.flatten()
-                n_vox_vol = np.prod(vol_dims)
+        # save 3D nifti of centers
+        centers_2D = np.zeros_like(brain_mask_2D)
+        centers_2D[centers] = centers
+        centers_3D = centers_2D.reshape(vol_dims)
+        (nib.Nifti1Image(
+            centers_3D, header=header, affine=affine, dtype=np.float32)
+            .to_filename(f'{out_dir}/searchlight_centers.nii.gz'))
 
-                # find centers and neighbors within flattened tensor
-                radius = 3
-                centers, neighbors = get_volume_searchlight(
-                    brain_mask_3D, radius=radius, threshold=.4)
-                pkl.dump({'centers': centers, 'neighbors': neighbors},
-                            open(f'{out_dir}/sl_params.pkl', 'wb'))
+        # collate responses
+        print('Collating responses...')
+        n_splits = len(
+            glob.glob(f'derivatives/FEAT/sub-F016/subject-wise/'
+                      f'task-{task}_split*A.gfeat'))
+        responses = np.empty(
+            (len(subjects), 8, 2, CFG.n_img, n_vox_vol))
+        combos = itertools.product(enumerate(subjects), range(n_splits),
+                                   enumerate(['A', 'B']))
+        for (s, subject), sp, (si, side) in combos:
+            if sp + si == 0:
+                print(f'subject {s + 1}/{len(subjects)}')
+            subj_dir = (f'derivatives/FEAT/sub-{subject}/'
+                        f'subject-wise')
+            cope_paths = [f'{subj_dir}/task-{task}_split-{sp}' \
+                          f'{side}.gfeat/cope{c + 1}.feat/stats/' \
+                          f'cope1.nii.gz' for c in range(CFG.n_img)]
+            for c, cope_path in enumerate(cope_paths):
+                responses[s, sp, si, c, :] = \
+                    nib.load(cope_path).get_fdata().flatten()
 
-                # save 3D nifti of centers
-                centers_2D = np.zeros_like(brain_mask_2D)
-                centers_2D[centers] = 1
-                centers_3D = centers_2D.reshape(vol_dims)
-                nib.Nifti1Image(centers_3D, header=header, affine=affine,
-                                dtype=np.float32).to_filename(
-                    f'{out_dir}/centers.nii.gz')
+        # analysis function
+        def get_robustness(responses):
+            RSMs = np.empty((len(subjects), CFG.n_img, CFG.n_img))
+            for s in range(responses.shape[0]):
+                sl_data = RSA_dataset(responses=responses[s])
+                sl_RSM = sl_data.calculate_RSM()
+                RSMs[s] = sl_RSM.RSM
+            RSM_group = RSA(RSM=np.nanmean(RSMs, axis=0))
+            RSM_group.RSM_to_table()
+            RSM_group.calculate_occlusion_robustness()
+            index_df = RSM_group.occlusion_robustness
+            score = index_df[
+                (index_df.analysis == 'object_completion') &
+                (index_df.subtype == subtype)].value.item()
+            del RSMs, RSM_group, sl_data, sl_RSM
+            gc.collect()
+            return score
 
-                # collate responses
-                print('Collating responses...')
-                subj_dir = (f'derivatives/FEAT/sub-{subject}/'
-                            f'subject-wise_space-{space}')
-                n_splits = len(
-                    glob.glob(f'{subj_dir}/task-{task}_split*A.gfeat'))
-                responses = np.empty((n_splits, 2, CFG.n_img, n_vox_vol))
-                for sp in range(n_splits):
-                    for si, side in enumerate(['A', 'B']):
-                        cope_paths = [f'{subj_dir}/task-{task}_split-{sp}' \
-                                      f'{side}.gfeat/cope{c + 1}.feat/stats/' \
-                                      f'cope1.nii.gz' for c in range(CFG.n_img)]
-                        for c, cope_path in enumerate(cope_paths):
-                            responses[sp, si, c, :] = \
-                                nib.load(cope_path).get_fdata().flatten()
+        # run searchlight
+        print('Performing searchlight...')
+        batch_size = 2048
+        robustness = []
+        for b, batch in enumerate(range(0, len(neighbors), batch_size)):
+            print(f'batch {b + 1}/{np.ceil(len(neighbors)/batch_size)}')
+            with np.errstate(divide='ignore', invalid='ignore'):
+                robustness += Parallel(n_jobs=num_procs)(
+                    delayed(get_robustness)(responses[:, :, :, :, nb]
+                    ) for nb in tqdm(neighbors[batch:batch + batch_size]))
 
-                # analysis function
-                def get_robustness(responses, norm, norm_method, similarity):
-                    sl_data = RSA_dataset(responses=responses)
-                    sl_RSM = sl_data.calculate_RSM(
-                        norm=norm,
-                        norm_method=norm_method,
-                        similarity=similarity)
-                    sl_RSM.RSM_to_table()
-                    sl_RSM.calculate_occlusion_robustness()
-                    index_df = sl_RSM.occlusion_robustness
-                    score = index_df[(index_df.analysis == 'object_completion') &
-                                     (index_df.subtype == subtype)].value.item()
-                    return score
-
-                # run searchlight
-                print('Performing searchlight...')
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    robustness = Parallel(n_jobs=num_procs)(
-                        delayed(get_robustness)(
-                            responses[:,:,:,nb], norm, norm_method, similarity
-                        ) for nb in tqdm(neighbors))
-
-                # reshape into 3D volume and save out nifti file
-                print('Writing statistical map to NIFTI...')
-                robustness_2D = -np.ones_like(brain_mask_2D)
-                for c, center in enumerate(centers):
-                    if np.isfinite(robustness[c]):
-                        robustness_2D[center] = robustness[c]
-                robustness_3D = robustness_2D.reshape(vol_dims)
-                nib.Nifti1Image(robustness_3D, header=header, affine=affine,
-                                dtype=np.float32).to_filename(out_path)
-
-    # completion calculated at group level (standard space only)
-    elif space == 'standard':
-
-        out_dir = f'{analysis_dir}/sub-fsaverage'
-        out_path = f'{out_dir}/completion_group.nii.gz'
-
-        if not op.isfile(out_path) or overwrite:
-
-            print(f'Performing searchlight RSA | derivatives | {task} | '
-                  f'{space} space | fs-average (group) | norm-{norm} | '
-                  f'{norm_method} | {similarity}')
-
-            os.makedirs(out_dir, exist_ok=True)
-
-            # get voxels for which most subjects (>= 5) have data
-            brain_mask_path = f'{out_dir}/FOV_mask.nii.gz'
-            if not op.isfile(brain_mask_path):
-                ind_masks = [(
-                    f'derivatives/FEAT/sub-{subj}/subject-wise_space-standard/'
-                    f'/task-{task}_all-runs.gfeat/cope1.feat/mask.nii.gz')
-                    for subj in CFG.subjects_final[exp]]
-                cmd = f'fslmaths ' + ' -add '.join(ind_masks)
-                cmd += f' -thr 5 -bin {brain_mask_path}'
-                os.system(cmd)
-            brain_mask = nib.load(brain_mask_path)
-            header, affine = brain_mask.header, brain_mask.affine
-            brain_mask_3D = brain_mask.get_fdata()
-            vol_dims = brain_mask_3D.shape
-            brain_mask_2D = brain_mask_3D.flatten()
-            n_vox_vol = np.prod(vol_dims)
-
-            # find centers and neighbors within flattened tensor
-            radius = 3
-            centers, neighbors = get_volume_searchlight(
-                brain_mask_3D, radius=radius, threshold=.4)
-            pkl.dump({'centers': centers, 'neighbors': neighbors},
-                     open(f'{out_dir}/sl_params.pkl', 'wb'))
-
-            # save 3D nifti of centers
-            centers_2D = np.zeros_like(brain_mask_2D)
-            centers_2D[centers] = centers
-            centers_3D = centers_2D.reshape(vol_dims)
-            nib.Nifti1Image(centers_3D, header=header, affine=affine,
-                            dtype=np.float32).to_filename(
-                f'{out_dir}/searchlight_centers.nii.gz')
-
-            # collate responses
-            print('Collating responses...')
-            n_splits = len(
-                glob.glob(f'derivatives/FEAT/sub-F016/subject-wise_space-{space}/'
-                          f'task-{task}_split*A.gfeat'))
-            responses = np.empty(
-                (len(subjects), n_splits, 2, CFG.n_img, n_vox_vol))
-            combos = itertools.product(enumerate(subjects), range(n_splits),
-                                       enumerate(['A', 'B']))
-            for (s, subject), sp, (si, side) in combos:
-                if sp + si == 0:
-                    print(f'subject {s + 1}/{len(subjects)}')
-                subj_dir = (f'derivatives/FEAT/sub-{subject}/'
-                            f'subject-wise_space-{space}')
-                cope_paths = [f'{subj_dir}/task-{task}_split-{sp}' \
-                              f'{side}.gfeat/cope{c + 1}.feat/stats/' \
-                              f'cope1.nii.gz' for c in range(CFG.n_img)]
-                for c, cope_path in enumerate(cope_paths):
-                    responses[s, sp, si, c, :] = \
-                        nib.load(cope_path).get_fdata().flatten()
-
-            # analysis function
-            def get_robustness(responses, norm, norm_method, similarity):
-                RSMs = np.empty((len(subjects), CFG.n_img, CFG.n_img))
-                for s in range(responses.shape[0]):
-                    sl_data = RSA_dataset(responses=responses[s])
-                    sl_RSM = sl_data.calculate_RSM(
-                        norm=norm,
-                        norm_method=norm_method,
-                        similarity=similarity)
-                    RSMs[s] = sl_RSM.RSM
-                RSM_group = RSA(
-                    RSM=np.nanmean(RSMs, axis=0), similarity=similarity)
-                RSM_group.RSM_to_table()
-                RSM_group.calculate_occlusion_robustness()
-                index_df = RSM_group.occlusion_robustness
-                score = index_df[
-                    (index_df.analysis == 'object_completion') &
-                    (index_df.subtype == subtype)].value.item()
-                del RSMs, RSM_group, sl_data, sl_RSM
-                gc.collect()
-                return score
-
-            # run searchlight
-            print('Performing searchlight...')
-            batch_size = 2048
-            robustness = []
-            for b, batch in enumerate(range(0, len(neighbors), batch_size)):
-                print(f'batch {b + 1}/{np.ceil(len(neighbors)/batch_size)}')
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    robustness += Parallel(n_jobs=num_procs)(
-                        delayed(get_robustness)(
-                            responses[:, :, :, :, nb], norm, norm_method, similarity
-                        ) for nb in tqdm(neighbors[batch:batch + batch_size]))
-
-            # reshape into 3D volume and save out nifti file
-            print('Writing statistical map to NIFTI...')
-            robustness_2D = -np.ones_like(brain_mask_2D)
-            for c, center in enumerate(centers):
-                if np.isfinite(robustness[c]):
-                    robustness_2D[center] = robustness[c]
-            robustness_3D = robustness_2D.reshape(vol_dims)
-            nib.Nifti1Image(robustness_3D, header=header, affine=affine,
-                            dtype=np.float32).to_filename(out_path)
+        # reshape into 3D volume and save out nifti file
+        print('Writing statistical map to NIFTI...')
+        robustness_2D = -np.ones_like(brain_mask_2D)
+        for c, center in enumerate(centers):
+            if np.isfinite(robustness[c]):
+                robustness_2D[center] = robustness[c]
+        robustness_3D = robustness_2D.reshape(vol_dims)
+        nib.Nifti1Image(robustness_3D, header=header, affine=affine,
+                        dtype=np.float32).to_filename(out_path)
 
 
 def do_RSA(exp, overwrite_analyses, overwrite_plots, overwrite_stats,
@@ -2000,9 +1564,9 @@ def do_RSA(exp, overwrite_analyses, overwrite_plots, overwrite_stats,
     # plot model and contrast matrices
     plot_RSM_models(overwrite_plots)
 
-    for space, task in itertools.product(CFG.spaces, tasks):
+    for task in tasks:
 
-        out_dir = f'derivatives/RSA/{task}_space-{space}'
+        out_dir = f'derivatives/RSA/{task}'
         os.makedirs(out_dir, exist_ok=True)
 
 
@@ -2028,7 +1592,7 @@ def do_RSA(exp, overwrite_analyses, overwrite_plots, overwrite_stats,
             if subject not in responses[region]:
                 print(f'Getting responses | {region} | {subject}')
                 responses_subject = get_responses(
-                    subject, region, task, space)
+                    subject, region, task)
                 responses[region][subject] = responses_subject
                 save_responses = new_responses = True
 
@@ -2046,26 +1610,17 @@ def do_RSA(exp, overwrite_analyses, overwrite_plots, overwrite_stats,
         if save_responses:
             pkl.dump(responses, open(responses_path, 'wb'))
 
-        # perform RSA using various methods
-        for norm, norm_method, similarity in itertools.product(
-                CFG.norms, CFG.norm_methods, CFG.similarities):
+        # run RSA
+        RSA_ROI(out_dir, overwrite_analyses,  overwrite_plots, overwrite_stats)
 
-            # run RSA
-            RSA_ROI(out_dir, norm, norm_method, similarity, overwrite_analyses,
-                    overwrite_plots, overwrite_stats)
-
-            # run searchlight RSA
+        # run searchlight RSA
+        if exp == 'exp1':
             overwrite = 'RSA_searchlight' in overwrite_analyses
-            #RSA_searchlight(task, space, norm, norm_method,
-            #        similarity, num_procs, 'group', 'prop', overwrite)
+            RSA_searchlight(task, num_procs, 'group', 'prop', overwrite)
 
     # stats involving effect of attention, exp2 only
     if exp == 'exp2':
-        for space in ['standard']:#CFG.spaces:
-            for norm, norm_method, similarity in itertools.product(
-                    CFG.norms, CFG.norm_methods, CFG.similarities):
-                stats_exp2(space, norm, norm_method, similarity,
-                           overwrite_stats)
+        stats_exp2(overwrite_stats)
 
     # make summary of ROI sizes
     ROI_summary = pd.DataFrame()
@@ -2079,17 +1634,4 @@ def do_RSA(exp, overwrite_analyses, overwrite_plots, overwrite_stats,
             'subject': [subject],
             'n_voxels': [n_voxels],
         })])
-    ROI_summary.to_csv(f'derivatives/ROIs/ROI_summary.csv',
-                       index=False)
-
-
-if __name__ == "__main__":
-
-    # overwrite_analyses = ['RSA_ROI', 'RSA_searchlight']
-    overwrite_analyses = ['responses', 'RSA_ROI']  # to overwrite all analyses
-    # overwrite_plots = ['TSNE', 'RSM', 'MDS', 'RSM_models', 'contrasts']
-    overwrite_plots = []  # to overwrite specific plots
-    overwrite_stats = False
-    for exp in ['exp1']:
-        os.chdir(f'{PROJ_DIR}/in_vivo/fMRI/{exp}')
-        do_RSA(exp, overwrite_analyses, overwrite_plots)
+    ROI_summary.to_csv(f'derivatives/ROIs/ROI_summary.csv', index=False)

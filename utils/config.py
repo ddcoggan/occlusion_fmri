@@ -22,13 +22,10 @@ class CFG:
 
     # subjects
     subjects = {exp: list(json.load(open(
-        f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/participants.json', 'r+'
+        f'{PROJ_DIR}/{exp}/participants.json', 'r+'
     )).keys()) for exp in ['exp1', 'exp2']}
-    subjects_final = deepcopy(subjects)
-    subjects_final['exp1'].remove('F013')
-    subjects_final['exp1'].remove('M123')
-    subjects_surf = {'exp1': ['fsaverage'],#['F135', 'F019', 'fsaverage']}
-                     'exp2': ['fsaverage']}
+    subjects_surf = {'exp1': ['fsaverage'], 'exp2': ['fsaverage']}
+
     # design
     exemplars = ['bear', 'bison', 'elephant', 'hare',
                  'jeep', 'lamp', 'sportsCar', 'teapot']
@@ -71,81 +68,26 @@ class CFG:
                     'image': exemplars,
                     'occlusion': occluders},
                 'block_order': 'randomised'
-            },
-            'objectLocaliser': {
-                'TR': 2,
-                'dynamics': 150,
-                'initial_fixation': 12,
-                'final_fixation': 0,
-                'block_duration': 12,
-                'interblock_interval': 12,
-                'conditions': {'category': cond_labels['loc']},
-                'block_order': [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]
             }}}
     scan_params['exp2'] = {
-        'objectLocaliser': scan_params['exp1']['objectLocaliser'].copy(),
         'occlusionAttnOn': scan_params['exp1']['occlusion'].copy(),
         'occlusionAttnOff': scan_params['exp1']['occlusion'].copy()}
 
 
     # ROIs mapped from labels to filenames
-    regions = {
-        'V1': 'V1',
-        'V2': 'V2',
-        'V3': 'V3',
-        'hV4': 'V4',
-        'V3a': 'V3a',
-        'V3b': 'V3b',
-        'LO1': 'LO1',
-        'LO2': 'LO2',
-        'hMT': 'TO1',
-        'MST': 'TO2',
-        'VO1': 'VO1',
-        'VO2': 'VO2',
-        'PHC1': 'PHC1',
-        'PHC2': 'PHC2',
-        'ventral_stream_sub_ret': 'IT',
-        'ventral_stream_sub_V1-V4': 'IT',
-        'IPS0': 'IPS0',
-        'IPS1': 'IPS1',
-        'IPS2': 'IPS2',
-        'IPS3': 'IPS3',
-        'IPS4': 'IPS4',
-        'IPS5': 'IPS5',
-        'SPL1': 'SPL1',
-        'FEF': 'FEF'}
+    regions = {'V1': 'V1', 'V2': 'V2', 'V3': 'V3', 'hV4': 'V4',
+        'ventral_stream_sub_V1-V4': 'IT'}
 
     # list regions in desired order for each set
     region_sets = {
-        #'EVC_ventral': ['V1', 'V2', 'V3', 'hV4', 'VO1', 'VO2', 'PHC1', 'PHC2',
-        #                'ventral_stream_sub_ret'],
-        'EVC_IT': ['V1', 'V2', 'V3', 'hV4', 'ventral_stream_sub_V1-V4'],
-        #'CORnet_layers': ['V1', 'V2', 'hV4', 'ventral_stream_sub_V1-V4'],
-        #'EVC': ['V1', 'V2', 'V3'],
-        #'ventral': ['hV4', 'VO1', 'VO2', 'PHC1', 'PHC2'],
-        #'lateral': ['V3a', 'V3b', 'LO1', 'LO2', 'hMT', 'MST'],
-        #'dorsal': [
-        #    'IPS0', 'IPS1', 'IPS2', 'IPS3', 'IPS4', 'IPS5', 'SPL1', 'FEF'],
-        #'all_regions': ['V1', 'V2', 'V3', 'hV4', 'V3a', 'V3b', 'LO1', 'LO2',
-        #                'hMT', 'MST', 'VO1', 'VO2', 'PHC1', 'PHC2',
-        #                'ventral_stream_sub_ret', 'IPS0', 'IPS1', 'IPS2',
-        #                'IPS3', 'IPS4', 'IPS5', 'SPL1', 'FEF'],
-    }
+        'EVC_IT': ['V1', 'V2', 'V3', 'hV4', 'ventral_stream_sub_V1-V4']}
 
     # location of masks in std space
-    mask_dir_std = op.expanduser('~/david/masks')
-
+    mask_dir_std = f'{PROJ_DIR}/masks'
 
     # methods
-    spaces = ['standard']  #['func','standard']
-    norms = ['all-conds']  #['none', 'all-conds', 'occluder', 'unoccluded']
-    norm_methods = ['z-score']#, 'mean-center']
-    similarities = {'pearson': "correlation ($\it{r}$)"}
-                    #'spearman': r"Correlation ($\rho$)"}
-    #dissimilarities = {'euclidean': 'Euclidean distance',
-    #                   'crossnobis': 'crossnobis distance'}
+    similarity_label = {'pearson': "correlation ($\it{r}$)"}
     off_diag_mask_flat = np.array(1 - np.eye(n_img).flatten(), dtype=bool)
-
 
     # occlusion robustness analyses
     occlusion_robustness_analyses = {
@@ -157,7 +99,7 @@ class CFG:
                 'different objects, same occluder',
                 'different objects, different occluders'],
             'index_label': 'OCI',
-            'subtypes': ['raw', 'norm', 'rel'],
+            'subtypes': ['prop'],
             'colours': T20COLS[4:6] + T20COLS[2:4],
             'ylims': (0, 1.1),
             'ylabel': 'OCI',
@@ -170,7 +112,7 @@ class CFG:
                 'different object, both complete',
                 'different object, occluded vs. complete'],
             'index_label': 'OII',
-            'subtypes': ['raw', 'norm', 'rel'],
+            'subtypes': ['prop'],
             'colours': T20COLS[:2] + T20COLS[6:8],
             'ylims': (0, 1.1),
             'ylabel': 'OII',
@@ -439,30 +381,15 @@ class CFG:
     FEAT_designs['groupwise']['robust_yn'] = 1
 
 
-    FEAT_contrasts = {'exp1': {
-        'occlusion': {
-            **{x + 1: [cond, np.eye(24, dtype=int)[x]] for x, cond in
-               enumerate(cond_labels['exp1'])},
-            **{25: ['all-conds', np.repeat(1, n_img)],
-               26: ['upper-gt-lower', np.tile([0, -1, 1], n_exem)],
-               27: ['unocc-gt-occ', np.tile([2, -1, -1], n_exem)],
-               28: ['animate-gt-inanimate-unocc',
-                    np.concatenate([np.tile([1, 0, 0], 4),
-                                    np.tile([-1, 0, 0], 4)])]}
-
-        },
-        'objectLocaliser': {
-            **{x + 1: [cond, np.eye(4, dtype=int)[x]] for x, cond in
-               enumerate(cond_labels['loc'])},
-            **{5: ['all-conds', [1, 1, 1, 1]],
-               6: ['face-gt-scrambled', [1, 0, 0, -1]],
-               7: ['house-gt-scrambled', [0, 1, 0, -1]],
-               8: ['object-gt-scrambled', [0, 0, 1, -1]],
-               9: ['face-gt-house', [1, -1, 0, 0]],
-               10: ['house-gt-face', [-1, 1, 0, 0]],
-               11: ['face-gt-object', [1, 0, -1, 0]],
-               12: ['house-gt-object', [0, 1, -1, 0]]}},
-    }}
+    FEAT_contrasts = {'exp1': {'occlusion': {
+        **{x + 1: [cond, np.eye(24, dtype=int)[x]] for x, cond in
+           enumerate(cond_labels['exp1'])},
+        **{25: ['all-conds', np.repeat(1, n_img)],
+           26: ['upper-gt-lower', np.tile([0, -1, 1], n_exem)],
+           27: ['unocc-gt-occ', np.tile([2, -1, -1], n_exem)],
+           28: ['animate-gt-inanimate-unocc', np.concatenate([
+               np.tile([1, 0, 0], 4), np.tile([-1, 0, 0], 4)])]}
+        }}}
 
     # add design lines for each task
     for task, contrasts in FEAT_contrasts['exp1'].items():
@@ -478,8 +405,7 @@ class CFG:
             'exp1'][task]['conditions'].values()])
         design_items['evs_orig'] = n_conds
         design_items['evs_real'] = n_conds*2
-        conds = cond_labels['loc'] if task == 'objectLocaliser' else \
-            cond_labels['exp1']
+        conds = cond_labels['exp1']
         for c, cond in enumerate(conds):
             design_items[f'evtitle{c+1}'] = f'"{cond}"'
             design_items[f'shape{c+1}'] =  3
@@ -515,10 +441,7 @@ class CFG:
     # do for exp2
     FEAT_contrasts['exp2'] = {
         'occlusionAttnOn': FEAT_contrasts['exp1']['occlusion'],
-        'occlusionAttnOff': FEAT_contrasts['exp1']['occlusion'],
-        'objectLocaliser': FEAT_contrasts['exp1']['objectLocaliser']}
-    FEAT_designs['modeling']['exp2']['objectLocaliser'] = FEAT_designs[
-        'modeling']['exp1']['objectLocaliser']
+        'occlusionAttnOff': FEAT_contrasts['exp1']['occlusion']}
     FEAT_designs['modeling']['exp2']['occlusionAttnOn'] = FEAT_designs[
         'modeling']['exp1']['occlusion']
     FEAT_designs['modeling']['exp2']['occlusionAttnOff'] = FEAT_designs[

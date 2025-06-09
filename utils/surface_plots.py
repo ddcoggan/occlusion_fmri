@@ -360,11 +360,5 @@ def surface_plots(overwrite=False, overwrite_plots=False,
                 plt.savefig(colourbar_path, bbox_inches='tight')
                 plt.close()
 
-if __name__ == "__main__":
-
-    for exp in ['exp1']:#, 'exp2']:
-        os.chdir(f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}')
-        surface_plots(overwrite=False, overwrite_plots=True,
-                      derdir=f'derivatives', index_type='prop')
 
 

@@ -16,36 +16,27 @@ import matplotlib
 import sys
 import seaborn as sns
 
-sys.path.append(os.path.expanduser("~/david/master_scripts"))
-from misc.plot_utils import export_legend, custom_defaults, make_legend
+from .plot_utils import export_legend, custom_defaults, make_legend
 plt.rcParams.update(custom_defaults)
 
 from .config import CFG, PROJ_DIR
 from .RSA import RSA
 
-figdir = f'{PROJ_DIR}/in_vivo/fMRI/figures'
-space = 'standard'
-norm = 'all-conds'
-norm_method = 'z-score'
-similarity = 'pearson'
-similarity_label = "correlation ($\it{r}$)"
+figdir = f'{PROJ_DIR}/figures'
 region_set = 'EVC_IT'
 regions = CFG.region_sets[region_set]
-index_level = 'ind'
-subtype = 'prop2'
 
 def main():
 
-    #make_ROI_plots(overwrite=True)
-    #make_RSM_model_plots(overwrite=False)
+    make_ROI_plots(overwrite=True)
+    make_RSM_model_plots(overwrite=False)
     for exp in ['exp1','exp2']:
-        tasks = [task for task in CFG.scan_params[exp] if 'occlusion' in task]
-        #for task in tasks:
-            #make_RSM_plots(exp, task)
-            #make_MDS_plots(exp, task)
-    #make_condwise_plots_exp1()
-    #make_condwise_plots_exp2()
-    #make_index_plots_exp1()
+        for task in CFG.scan_params[exp]:
+            make_RSM_plots(exp, task)
+            make_MDS_plots(exp, task)
+    make_condwise_plots_exp1()
+    make_condwise_plots_exp2()
+    make_index_plots_exp1()
     make_index_plots_exp2()
 
 
@@ -87,7 +78,7 @@ def make_ROI_plots(overwrite=False):
 
                 # make remaining surface labels
                 else:
-                    volume = (f'{PROJ_DIR}/data/in_vivo/fMRI/exp1/derivatives/'
+                    volume = (f'{PROJ_DIR}/exp1/derivatives/'
                               f'ROIs/MNI152_2mm/{region}.nii.gz')
                     surface = f'{volume[:-7]}_{hemi}.mgh'
                     if not op.isfile(surface):
@@ -152,15 +143,14 @@ def make_RSM_plots(exp, task, overwrite=False):
     for region in ['V1', 'V2', 'V3', 'hV4', 'ventral_stream_sub_V1-V4']:
         outpath = f'{out_dir}/{exp}_{task}_{CFG.regions[region]}.pdf'
         if not op.isfile(outpath) or overwrite:
-            with open(f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/derivatives/RSA/'
-                     f'{task}_space-{space}/norm-{norm}_{norm_method}/'
-                     f'{similarity}/RSA.pkl', 'rb') as f:
+            with open(f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+                     f'{task}/RSA.pkl', 'rb') as f:
                 RSMs = pkl.load(f)
 
             print(f'Plotting RSM...')
             RSM = RSMs[region]['group'].RSM
-            imx = f'{PROJ_DIR}/data/in_vivo/fMRI/RSM_pictures_x.png'
-            imy = f'{PROJ_DIR}/data/in_vivo/fMRI/RSM_pictures_y.png'
+            imx = f'{PROJ_DIR}/figures/RSM_pictures_x.png'
+            imy = f'{PROJ_DIR}/figures/RSM_pictures_y.png'
             picx = plt.imread(imx)
             picy = plt.imread(imy)
 
@@ -209,9 +199,8 @@ def make_MDS_plots(exp, task, overwrite=False):
         if not op.isfile(outpath) or overwrite:
             print(f'Plotting MDS...')
             RSMs = pkl.load(
-                open(f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/derivatives/RSA/'
-                     f'{task}_space-{space}/norm-{norm}_{norm_method}/'
-                     f'{similarity}/RSA.pkl', 'rb'))
+                open(f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+                     f'{task}/RSA.pkl', 'rb'))
             RSMs[region]['group'].plot_MDS(outpath=outpath)
 
 
@@ -226,9 +215,8 @@ def make_condwise_plots_exp1():
     for analysis, params in CFG.occlusion_robustness_analyses.items():
 
         df_summary = pd.read_csv(
-            f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/derivatives/RSA/'
-            f'occlusion_space-{space}/norm-{norm}_{norm_method}/'
-            f'{similarity}/{analysis}/cond-wise_sims_summary.csv')
+            f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+            f'occlusion/{analysis}/cond-wise_sims_summary.csv')
         os.makedirs(out_dir, exist_ok=True)
 
         # region-wise plot for each region_set
@@ -299,14 +287,12 @@ def make_condwise_plots_exp2():
     for analysis, params in CFG.occlusion_robustness_analyses.items():
 
         df_summary_attended = pd.read_csv(
-            f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/derivatives/RSA/'
-            f'occlusionAttnOn_space-{space}/norm-{norm}_{norm_method}/'
-            f'{similarity}/{analysis}/cond-wise_sims_summary.csv')
+            f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+            f'occlusionAttnOn/{analysis}/cond-wise_sims_summary.csv')
         df_summary_attended['task'] = 'attended'
         df_summary_unattended = pd.read_csv(
-            f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/derivatives/RSA/'
-            f'occlusionAttnOff_space-{space}/norm-{norm}_{norm_method}/'
-            f'{similarity}/{analysis}/cond-wise_sims_summary.csv')
+            f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+            f'occlusionAttnOff/{analysis}/cond-wise_sims_summary.csv')
         df_summary_unattended['task'] = 'unattended'
         df_summary = pd.concat([df_summary_attended, df_summary_unattended])
         os.makedirs(out_dir, exist_ok=True)
@@ -396,13 +382,12 @@ def make_index_plots_exp1():
         ylims = (0, 1)
 
         # data
-        RSA_dir = (f'{PROJ_DIR}/data/in_vivo/fMRI/{exp}/derivatives/RSA/'
-            f'{task}_space-{space}/norm-{norm}_{norm_method}/'
-            f'{similarity}/{analysis}')
+        RSA_dir = (f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+            f'{task}/{analysis}')
         df = pd.read_csv(f'{RSA_dir}/indices.csv')
         plot_df = df[
-            (df.level == index_level) &
-            (df.subtype == subtype) &
+            (df.level == 'ind') &
+            (df.subtype == 'prop2') &
             (df.region.isin(regions))].copy(
             deep=True).reset_index(drop=True).drop(columns=[
             'level', 'subtype', 'subject'])
@@ -478,22 +463,18 @@ def make_index_plots_exp2():
         ylims = (0, 1)
 
         # data
-        RSA_dir_attended = (f'{PROJ_DIR}/data/in_vivo/fMRI'
-                            f'/{exp}/derivatives/RSA/'
-                            f'occlusionAttnOn_space-{space}/norm-{norm}_{norm_method}/'
-                            f'{similarity}/{analysis}')
+        RSA_dir_attended = (f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+                            f'occlusionAttnOn/{analysis}')
         df_attended = pd.read_csv(f'{RSA_dir_attended}/indices.csv')
         df_attended['task'] = 'attended'
-        RSA_dir_unattended = (f'{PROJ_DIR}/data/in_vivo/fMRI'
-                              f'/{exp}/derivatives/RSA/'
-                              f'occlusionAttnOff_space-{space}/norm-{norm}_{norm_method}/'
-                              f'{similarity}/{analysis}')
+        RSA_dir_unattended = (f'{PROJ_DIR}/{exp}/derivatives/RSA/'
+                              f'occlusionAttnOff/{analysis}')
         df_unattended = pd.read_csv(f'{RSA_dir_unattended}/indices.csv')
         df_unattended['task'] = 'unattended'
         df = pd.concat([df_attended, df_unattended])
         plot_df = df[
-            (df.level == index_level) &
-            (df.subtype == subtype) &
+            (df.level == 'ind') &
+            (df.subtype == 'prop2') &
             (df.region.isin(regions))].copy(
             deep=True).reset_index(drop=True).drop(columns=[
             'level', 'subtype', 'subject'])
