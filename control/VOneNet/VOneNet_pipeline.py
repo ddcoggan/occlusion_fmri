@@ -1,14 +1,66 @@
+"""
+This script runs the computational control experiment. It measures object
+completion and occlusion invariance in the outputs of VOneNet, for which you
+will need to have the VOneNet repo (https://github.com/dicarlolab/vonenet)
+cloned and installed. Point the VONENET_DIR variable to the location of this
+repo.
+
+The original model is further modified to have
+human-like receptive field sizes and fixation instability. The human V1 pRF
+size is based on the data from Poltoratski and Tong (2020,
+https://www.jneurosci.org/content/40/16/3292), and is the average of V1
+voxels within 3.5 degrees eccentricity (FWHM = 0.74). The fixation
+instability parameter was measured from seven participants of the fMRI
+experiments, and was collected outside the scanner while they viewed the
+stimulus presentation from Experiment 2 during eye-tracking. We also applied
+multiples of the pRF size and fixation instability estimates to the model to
+observe how this affects performance. Receptive field size in the model is
+controlled through the visual_degrees parameter specified during model
+initialization. Fixational instability is implemented during model
+configuration by jittering the model's filters, and during evaluation by
+jittering the input images.
+
+The procedure is as follows:
+
+# 1. To obtain the relationship between the visual_degrees parameter and
+receptive field size, we first initialize the model with a range of visual
+angles and measure the receptive field size of the model's filters. Receptive
+field size is measured by repeatedly superimposing the model's filters on a
+blank canvas, with spatial jitter to simulate the fixational instability of
+human participants during pRF mapping. To prevent positive and negative
+values cancelling out, the filters are converted to absolute values before
+being superimposed onto the canvas. A 2D Gaussian is then fitted to the
+resulting image, and the receptive field size is determined by the FWHM of the
+Gaussian. After doing this for a range of visual angles, we fit a linear
+model to the log-transformed receptive field sizes in order to obtain a
+function that converts any desired receptive field size into the visual_degrees
+parameter required to configure the model. When subsequent inputs are
+jittered in line with the human fixational instability, the output
+units will exhibit the desired receptive field size on the model.
+
+# 2. The model is initialized with the visual_degrees parameter that
+results in the human V1 pRF size. We then input the fMRI stimulus set
+repeatedly while applying random the human-like fixational instability to the
+input images. The outputs are then collated and restricted to active
+units, and the object completion index and occlusion invariance index are
+calculated using the functions called from the fMRI analysis pipeline.
+
+# 3. The previous step is repeated while configuring the model with multiples
+of the human V1 pRF size and jittering inputs with multiple of the human
+fixation instability estimate.
+
+# 4. The results are plotted to make the figures used in the paper.
+"""
+
 import os
 import os.path as op
 import sys
 import glob
-import time
 import pickle as pkl
 
 import cv2
 import numpy as np
 from types import SimpleNamespace
-import shutil
 from itertools import product as itp
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,17 +71,17 @@ import torchvision.transforms as transforms
 from scipy import optimize
 from sklearn import linear_model
 
-from utils.plot_utils import make_legend, custom_defaults
+from utils.plot_utils import custom_defaults
 plt.rcParams.update(custom_defaults)
 
-from in_vivo.fMRI.utils import CFG as fMRI
-from in_vivo.fMRI.utils import RSA_dataset, RSA
+PROJ_DIR = op.dirname(op.dirname(op.abspath(__file__)))
+sys.path.append(PROJ_DIR)
+from utils import CFG as fMRI
+from utils import RSA_dataset
 
-sys.path.append(op.expanduser('~/david/repos/vonenet'))
+VONENET_DIR = op.expanduser('~/david/repos/vonenet')
+sys.path.append(VONENET_DIR)
 from vonenet.vonenet import VOneNet
-
-PROJ_DIR = op.expanduser('~/david/projects/p022_occlusion')
-FMRI_DIR = op.join(PROJ_DIR, 'data/in_vivo/fMRI')
 
 # stimulus parameters
 IMAGE_SIZE_PIX = 224
@@ -37,27 +89,16 @@ IMAGE_SIZE_DEG = 9
 PPD = IMAGE_SIZE_PIX / IMAGE_SIZE_DEG  # 24.888
 
 # human parameters
-FIX_STD_DEG_HUM = .25 #[0.291409, 0.197803] #
-V1_PRF_FWHM_DEG = 0.74
+FIX_STD_DEG_HUM = .25 # found in 'control/fixation_instability/results.csv'
+V1_PRF_FWHM_DEG = 0.74 # printed out when running 'control/pRF/analyze_pRFs.py'
 
 # VOneNet parameters parameters
-RF_METHOD = 'perc90'#['measured', 'mean', 'perc90']
-ANALYSIS_DIR = f'{FMRI_DIR}/V1_models_rf-{RF_METHOD}'
 NUM_FIX_SAMPLES = 64
-NUMS_FILTERS = [256]  # sanity check: higher completion in tallest filters?
 KERNEL_SIZE = 223  # ensure this is large enough to contain the filters
-CELL_TYPES = ['all']#, 'simple', 'complex']
-UNIT_SETS = ['responsive']#, 'all']
 FIX_MULTIPLIERS = [1, 1.5, 2, 3]
 FIX_STDS_DEG = [np.round(FIX_STD_DEG_HUM * i, 2) for i in FIX_MULTIPLIERS]
 PRF_MULTIPLIERS = [1, 1.5, 2, 3]
 PRF_SIZES_FWHM_DEG = [np.round(V1_PRF_FWHM_DEG * i, 2) for i in PRF_MULTIPLIERS]
-
-# RSA parameters
-INDEX_TYPES = ['prop']#['norm', 'prop', 'base', 'base2', 'rel']
-SIMILARITY = 'pearson'
-NORM = 'all-conds'
-NORM_METHOD = 'z-score'
 
 # plot parameters
 ylabel = "correlation ($\it{r}$)"
@@ -66,43 +107,14 @@ fix_stds_labels = [f'{i}:1' for i in FIX_MULTIPLIERS]
 fix_stds_hum_labels = f'{FIX_STD_DEG_HUM:.2f}' + r"$\degree$"
 rf_size_axis_label = 'relative (p)RF size\n(VOneNet : human V1)'
 rf_sizes_labels = [f'{i}:1' for i in PRF_MULTIPLIERS]
-#fix_std_axis_label = (r"spatial jitter $\sigma$" +
-#                      '\nrelative to human fixation ' + r"$\sigma$")
-#fix_std_axis_label = r"VOneNet jitter $\sigma$ : human fixation $\sigma$"
-#fix_stds_labels = [f'{f:.2f}' + r"$\degree$" for f in FIX_STDS_DEG]
-#fix_stds_labels = [v + r"$\times$" for v in ['1','2','3','4']]
 
 
 def main():
-    os.makedirs(ANALYSIS_DIR, exist_ok=True)
-    os.chdir(ANALYSIS_DIR)
-    fit_rf_model()
-    get_rf_params()
-    evaluate(overwrite=True)
-    analyze_effects()
+    #fit_rf_model()
+    #get_rf_params()
+    #evaluate()
+    plot_results()
     make_rf_figures()
-
-
-def get_tallest_filters(model):
-
-    """ Get the indices of the tallest filters in image space. The gabor
-    nx and ny are the width and height of the patch in units of a
-    single cycle of the sinusoid. We can therefore convert these into sigma
-    by dividing by the sf. Since the x and y are relative to the orientation of
-    the sinusoid, we then convert these into image coords by rotating the
-    distances based on the orientation of the gabor, and selecting those with
-    the largest height. """
-    sf, nx, ny, theta_deg = [model.gabor_params[key] for key in [
-        'sf', 'nx', 'ny', 'theta']]
-    sigx = nx / sf
-    sigy = ny / sf
-    theta = np.deg2rad(theta_deg)
-    sig_height = sigx * np.cos(theta) + sigy * np.sin(theta)
-    sig_width = sigx * np.sin(theta) + sigy * np.cos(theta)
-    tallest_simple = np.argsort(np.abs(sig_height)[:256])[::-1]
-    tallest_complex = np.argsort(np.abs(sig_height)[256:])[::-1] + 256
-
-    return tallest_simple.copy(), tallest_complex.copy()
 
 
 def gaussian(x, amplitude, xo, sigma, offset):
@@ -145,112 +157,74 @@ def fit_rf_model():
     out_dir = 'rf_model'
     os.makedirs(out_dir, exist_ok=True)
 
-    # method 1: align mean RF size
-    if RF_METHOD == 'measured':
+    # align mean RF size
 
-        # test a range of visual angles and get FWHMs, including human fix jitter
-        vis_angs = np.arange(0.8, 5, .2)
-        get_rf_params(vis_angs=vis_angs, fix_stds=[FIX_STD_DEG_HUM],
-                      out_dir=out_dir)
-        rf_params = pd.read_csv(f'{out_dir}/rf_params.csv')
+    # test a range of visual angles and get FWHMs, accounting for human fixation
+    vis_angs = np.arange(0.8, 5, .2)
+    get_rf_params(vis_angs=vis_angs, fix_stds=[FIX_STD_DEG_HUM],
+                  out_dir=out_dir)
+    rf_params = pd.read_csv(f'{out_dir}/rf_params.csv')
 
-        # relationship is non-linear, so fit a linear model to log-transformed data
-        vis_angs = rf_params['vis_ang'].to_numpy()
-        vis_angs_log = np.log(vis_angs)
-        fwhms = rf_params['FWHM_deg'].to_numpy()
-        fwhms_log = np.log(fwhms)
-        clf = linear_model.LinearRegression()
-        clf.fit(fwhms_log.reshape(-1,1), vis_angs_log)
+    # relationship is non-linear, so fit a linear model to log-transformed data
+    vis_angs = rf_params['vis_ang'].to_numpy()
+    vis_angs_log = np.log(vis_angs)
+    fwhms = rf_params['FWHM_deg'].to_numpy()
+    fwhms_log = np.log(fwhms)
+    clf = linear_model.LinearRegression()
+    clf.fit(fwhms_log.reshape(-1,1), vis_angs_log)
 
-        # predict visual angles for many model RF sizes
-        fwhms_model = np.linspace(min(fwhms), max(fwhms), 1000)
-        fwhms_model_log = np.log(fwhms_model)
-        vis_angs_model_log = clf.predict(fwhms_model_log.reshape(-1, 1))
-        vis_angs_model = np.exp(vis_angs_model_log)
+    # predict visual angles for many model RF sizes
+    fwhms_model = np.linspace(min(fwhms), max(fwhms), 1000)
+    fwhms_model_log = np.log(fwhms_model)
+    vis_angs_model_log = clf.predict(fwhms_model_log.reshape(-1, 1))
+    vis_angs_model = np.exp(vis_angs_model_log)
 
-        # make plot (visual angle vs. RF size)
-        fig, ax = plt.subplots(figsize=(4, 3))
-        ax.scatter(vis_angs, fwhms, color='tab:blue')
-        ax.plot(vis_angs_model, fwhms_model, color='tab:orange')
-        ax.set_xlabel('visual angle (degrees)')
-        ax.set_ylabel('RF size (degrees)')
-        fig.savefig(f'{out_dir}/rf_model.png')
-        plt.tight_layout()
-        plt.close()
+    # make plot (visual angle vs. RF size)
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.scatter(vis_angs, fwhms, color='tab:blue')
+    ax.plot(vis_angs_model, fwhms_model, color='tab:orange')
+    ax.set_xlabel('visual angle (degrees)')
+    ax.set_ylabel('RF size (degrees)')
+    fig.savefig(f'{out_dir}/rf_model.png')
+    plt.tight_layout()
+    plt.close()
 
-        # make plot (log visual angle vs. log RF size)
-        fig, ax = plt.subplots(figsize=(4, 3))
-        ax.scatter(vis_angs_log, fwhms_log, color='tab:blue')
-        ax.plot(vis_angs_model_log, fwhms_model_log, color='tab:orange')
-        ax.set_xlabel('log visual angle (degrees)')
-        ax.set_ylabel('log RF size (degrees)')
-        fig.savefig(f'{out_dir}/rf_model_log.png')
-        plt.tight_layout()
-        plt.close()
+    # make plot (log visual angle vs. log RF size)
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.scatter(vis_angs_log, fwhms_log, color='tab:blue')
+    ax.plot(vis_angs_model_log, fwhms_model_log, color='tab:orange')
+    ax.set_xlabel('log visual angle (degrees)')
+    ax.set_ylabel('log RF size (degrees)')
+    fig.savefig(f'{out_dir}/rf_model_log.png')
+    plt.tight_layout()
+    plt.close()
 
-        with open(f'{out_dir}/rf_model.pkl', 'wb') as f:
-            pkl.dump(clf, f)
-
-
-    # method 2: fit model based on mean or 90th percentils of the area of
-    # each individual RF, based on the gabor parameters. This doesn't account
-    # for fixational jitter.
-    else:
-
-        """ 
-        The gabor nx and ny are the width and height of the patch in units of a 
-        single cycle of the sinusoid. We can therefore convert these into sigma 
-        by dividing by the sf, then calculate the area, and solve for the 
-        radius of a circle with the same area.
-        """
-
-        model = VOneNet(model_arch=None, visual_degrees=IMAGE_SIZE_DEG,
-                        ksize=KERNEL_SIZE, rand_param=False)
-        sf, nx, ny = [model.gabor_params[key] for key in ['sf', 'nx', 'ny']]
-        sf /= PPD
-        sigx = nx / sf
-        sigy = ny / sf
-        area = sigx * sigy * np.pi
-        if RF_METHOD == 'perc90':
-            sigma = np.sqrt(np.percentile(area, 90) / np.pi).item()
-        elif RF_METHOD == 'mean':
-            sigma = np.sqrt(area.mean() / np.pi).item()
-        fwhm_actual = (sigma * 2.355) / PPD
-        with open(f'{out_dir}/rf_model.pkl', 'wb') as f:
-            pkl.dump(fwhm_actual, f)
+    with open(f'{out_dir}/rf_model.pkl', 'wb') as f:
+        pkl.dump(clf, f)
 
 
-def get_fwhm_to_dva():
+class FwhmToDva:
 
     """
-    Loads the linear regression model or the fwhm when configured with
-    the human dva. Then creates a function to obtain required dva for a
-    desired fwhm.
+    Returns the visual_degrees parameter required for VOneNet to exhibit a
+    specified receptive field size, based on the rf_model generated
+    previously.
     """
-    with open('rf_model/rf_model.pkl', 'rb') as f:
-        params = pkl.load(f)
+    def __init__(self):
+        with open('rf_model/rf_model.pkl', 'rb') as f:
+            self.params = pkl.load(f)
 
-    if type(params) == linear_model.LinearRegression:
-        def fwhm_to_dva(fwhm):
-            dva = np.exp(params.predict(np.log(fwhm).reshape(-1, 1))).item()
-            return dva
-    else:
-        def fwhm_to_dva(fwhm):
-            dva = (params / fwhm) * IMAGE_SIZE_DEG
-            return dva
-
-    return fwhm_to_dva
+    def __call__(self, fwhm):
+        return np.exp(self.params.predict(np.log(fwhm).reshape(-1, 1))).item()
 
 
 def get_rf_params(rf_sizes=PRF_SIZES_FWHM_DEG,
-                  vis_angs=None,
                   fix_stds=FIX_STDS_DEG,
-                  nums_filters=NUMS_FILTERS,
-                  cell_types=CELL_TYPES,
+                  vis_angs=None,
                   out_dir='receptive_fields'):
 
     if vis_angs is None:
-        fwhm_to_dva = get_fwhm_to_dva()
+        fwhm_to_dva = FwhmToDva()
         vis_angs = [fwhm_to_dva(i) for i in rf_sizes]
 
     df = pd.DataFrame()
@@ -258,18 +232,14 @@ def get_rf_params(rf_sizes=PRF_SIZES_FWHM_DEG,
 
         model = VOneNet(model_arch=None, visual_degrees=vis_ang,
                         ksize=KERNEL_SIZE, rand_param=False)
-        simple_chans, complex_chans = get_tallest_filters(model)
 
-        for num_filters, fix_std, cell_type in itp(
-                nums_filters, fix_stds, cell_types):
+        for fix_std in fix_stds:
 
-            params = dict(
-                simple=model.simple_conv_q0.weight[simple_chans[:num_filters]],
-                complex=torch.cat([
-                    model.simple_conv_q0.weight[complex_chans[:num_filters]],
-                    model.simple_conv_q1.weight[complex_chans[:num_filters]]], dim=0))
-            params['all'] = torch.cat([params['simple'], params['complex']], dim=0)
-            filters = params[cell_type]
+            filters = torch.cat([
+                model.simple_conv_q0.weight[:256],
+                model.simple_conv_q0.weight[256:],
+                model.simple_conv_q1.weight[256:]
+            ], dim=0)
             mean_filter = filters.abs().mean((0,1)).numpy()
 
             # add RFs to image, with fixational jitter
@@ -307,8 +277,7 @@ def get_rf_params(rf_sizes=PRF_SIZES_FWHM_DEG,
                 rf_size = FWHM_deg
 
             # create output directory
-            outdir = (f'{out_dir}/filt-{num_filters}_fixstd-{fix_std:.2f}_'
-                      f'rfsize-{rf_size:.2f}_cell-{cell_type}')
+            outdir = f'{out_dir}/fixstd-{fix_std:.2f}_rfsize-{rf_size:.2f}'
             os.makedirs(outdir, exist_ok=True)
 
             # save montage of filters
@@ -342,10 +311,10 @@ def get_rf_params(rf_sizes=PRF_SIZES_FWHM_DEG,
                 (fg_b * alpha).astype(np.uint8)])
             # do the same for the object, but with 1 - alpha
             object_rgb = np.array(Image.open(
-                f'{FMRI_DIR}/exp1/stimuli/images/bear_lower.png'
+                f'../../exp1/stimuli/images/bear_lower.png'
             ).convert('RGB'))
             mean_object = np.array(Image.open(
-                f'{FMRI_DIR}/exp1/stimuli/images/bear_complete.png')).mean()
+                f'../../exp1/stimuli/images/bear_complete.png')).mean()
             object_rgb = np.clip(
                 (object_rgb - mean_object) * 0.5 + mean_object, 0, 255
             ).astype(np.uint8)  # lower the contrast
@@ -354,16 +323,7 @@ def get_rf_params(rf_sizes=PRF_SIZES_FWHM_DEG,
                 (obj_r * (1 - alpha)).astype(np.uint8),
                 (obj_g * (1 - alpha)).astype(np.uint8),
                 (obj_b * (1 - alpha)).astype(np.uint8)])
-            # add the two images together
-            figure_rgba = cv2.add(image_rgba, object_rgba)
-            # add the full kernel size relative to the image
-            # image_kl = cv2.rectangle(image_rf, (center - KERNEL_SIZE // 2,
-            #                                    center - KERNEL_SIZE // 2),
-            #                            (center + KERNEL_SIZE // 2,
-            #                                center + KERNEL_SIZE // 2),
-            #                            color=(0, 255, 0), thickness=1)
-            # add the RF FWHM to the image
-            # make image larger so RF is smooth
+            figure_rgba = cv2.add(image_rgba, object_rgba) # combine
             sf = 2
             image_size_large = (IMAGE_SIZE_PIX * sf, IMAGE_SIZE_PIX * sf)
             figure_rgba = cv2.resize(figure_rgba, image_size_large)
@@ -401,8 +361,6 @@ def get_rf_params(rf_sizes=PRF_SIZES_FWHM_DEG,
                 vis_ang=[vis_ang],
                 fix_std=[fix_std],
                 kernel_size_pix=[KERNEL_SIZE],
-                num_filters=[num_filters],
-                cell_type=[cell_type],
                 sigma_pix=[rf.sigma],
                 sigma_deg=[rf.sigma / PPD],
                 FWHM_pix=[FWHM],
@@ -419,9 +377,8 @@ def evaluate(overwrite=False):
 
     # prepare data objects
     torch.no_grad()
-    normalize = transforms.Normalize(mean=[0.5], std=[0.5])
 
-    image_dir = f'{FMRI_DIR}/exp1/stimuli/images'
+    image_dir = f'../../exp1/stimuli/images'
     images = sorted(glob.glob(f'{image_dir}/*'))
     dataset = torch.empty((len(images), 3, 224, 224))
     image_counter = 0
@@ -444,11 +401,10 @@ def evaluate(overwrite=False):
     else:
         df_indices = pd.read_csv('indices.csv')
 
-    fwhm_to_dva = get_fwhm_to_dva()
+    fwhm_to_dva = FwhmToDva()
 
     # loop over different levels of fixation stability and visual angle
-    for fix_std, rf_size in itp(
-            FIX_STDS_DEG, PRF_SIZES_FWHM_DEG):
+    for fix_std, rf_size in itp(FIX_STDS_DEG, PRF_SIZES_FWHM_DEG):
 
         if not len(df_conds) or not bool(
                 len(df_conds[
@@ -467,8 +423,8 @@ def evaluate(overwrite=False):
                             ksize=KERNEL_SIZE, rand_param=False).cuda()
 
             # store sample image inputs
-            sample_dir = (f'sample_inputs/fixstd-{fix_std:.2f}_rfsize-'
-                          f'{rf_size:.2f}')
+            sample_dir = (
+                f'sample_inputs/fixstd-{fix_std:.2f}_rfsize-{rf_size:.2f}')
             os.makedirs(sample_dir, exist_ok=True)
             sample_inputs = torch.zeros(NUM_FIX_SAMPLES, 2, 3, 224, 224)
 
@@ -486,7 +442,6 @@ def evaluate(overwrite=False):
                     inputs[i] = transforms.functional.affine(
                         img=image, angle=0, translate=(x, y),
                         scale=1., shear=0., fill=mean_luminance)
-                #inputs = normalize(inputs).cuda()
                 activations[r] = model(inputs.cuda()).detach().cpu()
 
                 # store some inputs
@@ -514,128 +469,94 @@ def evaluate(overwrite=False):
                 plt.savefig(op.join(sample_dir, f'input_{i}_mean.png'))
                 plt.close()
 
-            for num_filters, cell_type, unit_set in itp(
-                    NUMS_FILTERS, CELL_TYPES, UNIT_SETS):
 
-                analysis = (f'num-filters-{num_filters}_fixstd-{fix_std:.2f}_'
-                    f'rfsize-{rf_size:.2f}_cell-{cell_type}_units-{unit_set}')
+            analysis = f'fixstd-{fix_std:.2f}_rfsize-{rf_size:.2f}'
 
-                # restrict to top n channels with tallest filters
-                simple_chans, complex_chans = get_tallest_filters(model)
-                if cell_type == 'simple':
-                    chans = simple_chans[:num_filters]
-                elif cell_type == 'complex':
-                    chans = complex_chans[:num_filters]
-                else:  # all
-                    chans = np.concatenate([simple_chans[:num_filters],
-                                            complex_chans[:num_filters]])
-                acts = activations[:, :, chans]
 
-                # select units with a z-score > 3.1
-                if unit_set == 'responsive':
-                    unit_means = acts.mean(axis=(0,1))
-                    selected_units = unit_means > (unit_means.std() * 3.1)
-                    print(f'Number of selected units: {selected_units.sum()}/'
-                         f'{np.prod(unit_means.shape)}')
-                    acts = acts[:, :, selected_units]
+            # select units with a z-score > 3.1
+            unit_means = activations.mean(axis=(0,1))
+            selected_units = unit_means > (unit_means.std() * 3.1)
+            print(f'Number of selected units: {selected_units.sum()}/'
+                 f'{np.prod(unit_means.shape)}')
+            acts = activations[:, :, selected_units]
 
-                # split into two halves, flatten, and calculate mean response
-                acts = acts.reshape(2, NUM_FIX_SAMPLES // 2, 24, -1).mean(
-                    axis=1).unsqueeze(0).numpy()
+            # split into two halves, flatten, and calculate mean response
+            acts = acts.reshape(2, NUM_FIX_SAMPLES // 2, 24, -1).mean(
+                axis=1).unsqueeze(0).numpy()
 
-                # make RSA dataset and calculate RSM
-                print(f'Calculating RSM')
-                RSM = RSA_dataset(responses=acts).calculate_RSM(
-                    NORM, NORM_METHOD, SIMILARITY)
+            # make RSA dataset and calculate RSM
+            print(f'Calculating RSM')
+            RSM = RSA_dataset(responses=acts).calculate_RSM()
 
-                # plot RSM
-                print(f'Plotting RSM ')
-                RSM.plot_RSM(
-                    vmin=-1, vmax=1,
-                    fancy=True,
-                    labels=fMRI.cond_labels['exp1'],
-                    outpath=(f'RSMs/{analysis}.pdf'),
-                    measure=ylabel)
+            # plot RSM
+            print(f'Plotting RSM ')
+            RSM.plot_RSM(
+                vmin=-1, vmax=1,
+                fancy=True,
+                labels=fMRI.cond_labels['exp1'],
+                outpath=f'RSMs/{analysis}.pdf',
+                measure=ylabel)
 
-                # MDS
-                print(f'Plotting MDS')
-                outpath = f'MDS/{analysis}.pdf'
-                RSM.plot_MDS(title=None, outpath=outpath)
+            # MDS
+            print(f'Plotting MDS')
+            outpath = f'MDS/{analysis}.pdf'
+            RSM.plot_MDS(title=None, outpath=outpath)
 
-                # condition-wise similarities
-                RSM.RSM_to_table()
-                df = RSM.RSM_table.copy(deep=True)
-                df = df.drop(columns=['exemplar_b', 'occluder_a',
-                    'occluder_b']).groupby(['exemplar_a', 'analysis', 'level']).agg('mean'). \
-                    dropna().reset_index()
-                df = (df
-                    .groupby(['analysis', 'level'])
-                    .agg({'similarity': ['mean', 'sem']})
-                    .reset_index()
-                )
-                df.columns = ['analysis', 'level', 'similarity', 'sem']
-                df['num_filters'] = num_filters
-                df['rf_size'] = rf_size
-                df['vis_ang'] = vis_ang
-                df['cell_type'] = cell_type
-                df['fix_std'] = fix_std
-                df['unit_set'] = unit_set
-                df['num_units'] = acts.shape[-1]
-                df_conds = pd.concat([df_conds, df.copy(deep=True)]).reset_index(
-                    drop=True)
+            # condition-wise similarities
+            RSM.RSM_to_table()
+            df = RSM.RSM_table.copy(deep=True)
+            df = (df
+                .drop(columns=['exemplar_b', 'occluder_a', 'occluder_b'])
+                .groupby(['exemplar_a', 'analysis', 'level'])
+                .agg('mean').dropna().reset_index())
+            df = (df
+                .groupby(['analysis', 'level'])
+                .agg({'similarity': ['mean', 'sem']})
+                .reset_index())
+            df.columns = ['analysis', 'level', 'similarity', 'sem']
+            df['rf_size'] = rf_size
+            df['vis_ang'] = vis_ang
+            df['fix_std'] = fix_std
+            df['num_units'] = acts.shape[-1]
+            df_conds = pd.concat([df_conds, df.copy(deep=True)]).reset_index(
+                drop=True)
 
-                # occlusion robustness indices, including object bias
-                RSM.calculate_occlusion_robustness()
-                RSM.fit_models()
-                df = RSM.occlusion_robustness.copy(deep=True)
-                df = pd.concat([df, pd.DataFrame(dict(
-                    analysis=['object_bias'],
-                    subtype=['object_bias'],
-                    index=['object bias'],
-                    value=[RSM.exemplar_v_occluder_position]))])
-                df['num_filters'] = num_filters
-                df['rf_size'] = rf_size
-                df['vis_ang'] = vis_ang
-                df['cell_type'] = cell_type
-                df['fix_std'] = fix_std
-                df['unit_set'] = unit_set
-                df['num_units'] = acts.shape[-1]
-                df_indices = pd.concat([df_indices, df]).reset_index(drop=True)
+            # occlusion robustness indices
+            RSM.calculate_occlusion_robustness()
+            df = RSM.occlusion_robustness.copy(deep=True)
+            df['rf_size'] = rf_size
+            df['vis_ang'] = vis_ang
+            df['fix_std'] = fix_std
+            df['num_units'] = acts.shape[-1]
+            df_indices = pd.concat([df_indices, df]).reset_index(drop=True)
 
     df_conds.to_csv('conditions.csv', index=False)
     df_indices.to_csv('indices.csv', index=False)
 
 
-def analyze_effects():
+def plot_results():
 
     df_indices = pd.read_csv('indices.csv')
     df_conds = pd.read_csv('conditions.csv')
 
     # ensure levels are ordered correctly
-    level_order = fMRI.occlusion_robustness_analyses[
-                      'object_completion']['conds'] + \
-                  fMRI.occlusion_robustness_analyses[
-                      'occlusion_invariance']['conds']
+    level_order = \
+        fMRI.occlusion_robustness_analyses['object_completion']['conds'] + \
+        fMRI.occlusion_robustness_analyses['occlusion_invariance']['conds']
     df_conds.level = df_conds.level.astype('category').cat.reorder_categories(
         level_order)
 
-    for (analysis, params), num_filters, cell_type, unit_set in itp(
-            fMRI.occlusion_robustness_analyses.items(), NUMS_FILTERS,
-            CELL_TYPES, UNIT_SETS):
+    for analysis, params in fMRI.occlusion_robustness_analyses.items():
 
-        out_dir = (f'{analysis}/filt-{num_filters}_cell-{cell_type}_units-'
-                    f'{unit_set}')
+        out_dir = analysis
         os.makedirs(out_dir, exist_ok=True)
 
-        # condition-wise similarities (human-fit subset)
+        # condition-wise similarities (human-aligned model)
         outpath = f'{out_dir}/condition-wise_similarities_humanlike.pdf'
         fig, ax = plt.subplots(figsize=(2, 3), sharey=True)
         df = df_conds[(df_conds.analysis == analysis) &
                       (df_conds.rf_size == V1_PRF_FWHM_DEG) &
-                      (df_conds.fix_std == FIX_STD_DEG_HUM) &
-                      (df_conds.num_filters == num_filters) &
-                      (df_conds.cell_type == cell_type) &
-                      (df_conds.unit_set == unit_set)]
+                      (df_conds.fix_std == FIX_STD_DEG_HUM)]
         xvals = np.arange(len(df))
         yvals = df.similarity.values
         yerr = df['sem'].values
@@ -655,89 +576,82 @@ def analyze_effects():
         fig.savefig(outpath)
         plt.close()
 
-        # robustness indices
-        for index_type in INDEX_TYPES:
+        # robustness indices (human-aligned model)
 
-            # human indices
-            fMRI_vals, fMRI_errs = [], []
-            for exp, task in zip(
-                    ['exp1', 'exp2', 'exp2'],
-                    ['occlusion', 'occlusionAttnOn', 'occlusionAttnOff']):
-                fMRI_data = pd.read_csv(
-                    f'{FMRI_DIR}/{exp}/derivatives/RSA/'
-                    f'{task}_space-standard/norm-all-conds_z-score/'
-                    f'pearson/{analysis}/indices.csv')
-                fMRI_vals.append(fMRI_data['value'][
-                    (fMRI_data.level == 'ind') &
-                    (fMRI_data.subtype == 'prop2') &
-                    (fMRI_data.region == 'V1')].mean())
-                fMRI_errs.append(fMRI_data['value'][
-                    (fMRI_data.level == 'ind') &
-                    (fMRI_data.subtype == 'prop2') &
-                    (fMRI_data.region == 'V1')].sem())
+        # human indices
+        fMRI_vals, fMRI_errs = [], []
+        for exp, task in zip(
+                ['exp1', 'exp2', 'exp2'],
+                ['occlusion', 'occlusionAttnOn', 'occlusionAttnOff']):
+            fMRI_data = pd.read_csv(
+                f'../../{exp}/derivatives/RSA/'
+                f'{task}/{analysis}/indices.csv')
+            fMRI_vals.append(fMRI_data['value'][
+                (fMRI_data.level == 'ind') &
+                (fMRI_data.subtype == 'prop2') &
+                (fMRI_data.region == 'V1')].mean())
+            fMRI_errs.append(fMRI_data['value'][
+                (fMRI_data.level == 'ind') &
+                (fMRI_data.subtype == 'prop2') &
+                (fMRI_data.region == 'V1')].sem())
 
-            outpath = f'{out_dir}/indices_barplot_{index_type}.pdf'
+        outpath = f'{out_dir}/indices_barplot.pdf'
 
-            colors = matplotlib.cm.tab20.colors
-            text_offset = .02
-            fontsize = 9
-            fig, axes = plt.subplots(
-                nrows=1, ncols=2, figsize=(2.5, 4), sharey=True,
-                gridspec_kw={'width_ratios': [3, .9]})
+        colors = matplotlib.cm.tab20.colors
+        text_offset = .02
+        fontsize = 9
+        fig, axes = plt.subplots(
+            nrows=1, ncols=2, figsize=(2.5, 4), sharey=True,
+            gridspec_kw={'width_ratios': [3, .9]})
 
-            # human panel
-            ax = axes[0]
-            #human_colors = [colors[i] for i in [6,6,7]]
-            ax.bar(np.arange(3), fMRI_vals, color='tab:blue')
-            ax.errorbar(np.arange(3), fMRI_vals, fMRI_errs, color='k',
-                        linestyle='', capsize=3, clip_on=False)
-            ax.set_xticks([])
-            ax.set_yticks(np.arange(0, 1.1, .5))
-            ax.set_ylim(-.1, 1)
-            ax.set_ylabel(f'{analysis.replace("_", " ")} index', size=11)
-            ax.set_xlabel("Human V1", size=11)
-            ax.text(0, text_offset, f'Exp. 1, attended',
-                    fontsize=fontsize, ha='center', rotation=90, c='w')
-            ax.text(0, fMRI_vals[0] + fMRI_errs[0] + text_offset,
-                    f'{fMRI_vals[0]:.2f}', ha='center')
-            ax.text(1, text_offset, f'Exp. 2, attended',
-                    fontsize=fontsize, ha='center', rotation=90, c='w')
-            ax.text(1, fMRI_vals[1] + fMRI_errs[1] + text_offset,
-                    f'{fMRI_vals[1]:.2f}', ha='center')
-            ax.text(2, text_offset, f'Exp. 2, unattended',
-                    fontsize=fontsize, ha='center', rotation=90, c='w')
-            ax.text(2, fMRI_vals[2] + fMRI_errs[2] + text_offset,
-                f'{fMRI_vals[2]:.2f}', ha='center')
-            ax.spines['bottom'].set_visible(False)
+        # human panel
+        ax = axes[0]
+        #human_colors = [colors[i] for i in [6,6,7]]
+        ax.bar(np.arange(3), fMRI_vals, color='tab:blue')
+        ax.errorbar(np.arange(3), fMRI_vals, fMRI_errs, color='k',
+                    linestyle='', capsize=3, clip_on=False)
+        ax.set_xticks([])
+        ax.set_yticks(np.arange(0, 1.1, .5))
+        ax.set_ylim(-.1, 1)
+        ax.set_ylabel(f'{analysis.replace("_", " ")} index', size=11)
+        ax.set_xlabel("Human V1", size=11)
+        ax.text(0, text_offset, f'Exp. 1, attended',
+                fontsize=fontsize, ha='center', rotation=90, c='w')
+        ax.text(0, fMRI_vals[0] + fMRI_errs[0] + text_offset,
+                f'{fMRI_vals[0]:.2f}', ha='center')
+        ax.text(1, text_offset, f'Exp. 2, attended',
+                fontsize=fontsize, ha='center', rotation=90, c='w')
+        ax.text(1, fMRI_vals[1] + fMRI_errs[1] + text_offset,
+                f'{fMRI_vals[1]:.2f}', ha='center')
+        ax.text(2, text_offset, f'Exp. 2, unattended',
+                fontsize=fontsize, ha='center', rotation=90, c='w')
+        ax.text(2, fMRI_vals[2] + fMRI_errs[2] + text_offset,
+            f'{fMRI_vals[2]:.2f}', ha='center')
+        ax.spines['bottom'].set_visible(False)
 
-            # model panel
-            ax = axes[1]
-            model_val = df_indices[
-                (df_indices.analysis == analysis) &
-                (df_indices.fix_std == FIX_STD_DEG_HUM) &
-                (df_indices.rf_size == V1_PRF_FWHM_DEG) &
-                (df_indices.subtype == index_type) &
-                (df_indices.num_filters == num_filters) &
-                (df_indices.cell_type == cell_type) &
-                (df_indices.unit_set == unit_set)].value.values[0].item()
-            model_colors = [colors[8]]
-            ax.bar(0, model_val, color=model_colors)
-            if model_val > 0:
-                text_y = model_val + text_offset
-            else:
-                text_y = model_val - text_offset - .04
-            ax.text(0, text_y, f'{model_val:.2f}', ha='center')
-            ax.set_xticks([])
-            ax.set_xlabel("VOneNet", size=11)
-            ax.spines[['bottom', 'left']].set_visible(False)
-            ax.tick_params(axis='y', which='both', left=False)
-            plt.tight_layout()
-            #fig.subplots_adjust(bottom=0.13, left=.3, top=.95)
-            plt.savefig(outpath)
-            plt.close()
+        # model panel
+        ax = axes[1]
+        model_val = df_indices[
+            (df_indices.analysis == analysis) &
+            (df_indices.fix_std == FIX_STD_DEG_HUM) &
+            (df_indices.rf_size == V1_PRF_FWHM_DEG)].value.values[0].item()
+        model_colors = [colors[8]]
+        ax.bar(0, model_val, color=model_colors)
+        if model_val > 0:
+            text_y = model_val + text_offset
+        else:
+            text_y = model_val - text_offset - .04
+        ax.text(0, text_y, f'{model_val:.2f}', ha='center')
+        ax.set_xticks([])
+        ax.set_xlabel("VOneNet", size=11)
+        ax.spines[['bottom', 'left']].set_visible(False)
+        ax.tick_params(axis='y', which='both', left=False)
+        plt.tight_layout()
+        #fig.subplots_adjust(bottom=0.13, left=.3, top=.95)
+        plt.savefig(outpath)
+        plt.close()
 
-
-        # condition-wise similarities (entire set)
+        # condition-wise similarities (all models)
         outpath = f'{out_dir}/condition-wise_similarities.pdf'
         fig, axes = plt.subplots(len(FIX_MULTIPLIERS), len(PRF_MULTIPLIERS),
                                  figsize=(4,4), sharex=True, sharey=True)
@@ -746,10 +660,7 @@ def analyze_effects():
             ax = axes[f, r]
             df = df_conds[(df_conds.analysis == analysis) &
                           (df_conds.fix_std == fix_std) &
-                          (df_conds.rf_size == rf_size) &
-                          (df_conds.num_filters == num_filters) &
-                          (df_conds.cell_type == cell_type) &
-                          (df_conds.unit_set == unit_set)]
+                          (df_conds.rf_size == rf_size)]
             xvals = np.arange(len(df))
             yvals = df.similarity.values
             yerr = df['sem'].values
@@ -781,84 +692,67 @@ def analyze_effects():
                  ha='center', va='center')
         fig.text(.25, .86, "$\it{r}$", fontsize=12,# rotation=90,
                  ha='center', va='center')
-        #fig.set_title(r"spatial jitter $\sigma$", loc='left')
         fig.subplots_adjust(bottom=.2, left=.3, top=.95)
-        #plt.tight_layout()
         fig.savefig(outpath)
         plt.close()
 
 
-        # robustness indices
-        for index_type in INDEX_TYPES:
+        # robustness indices (all models)
 
-            # human indices
-            fMRI_vals = []
-            for exp, task in zip(
-                    ['exp1', 'exp2', 'exp2'],
-                    ['occlusion', 'occlusionAttnOn', 'occlusionAttnOff']):
-                fMRI_data = pd.read_csv(
-                    f'{FMRI_DIR}/{exp}/derivatives/RSA/'
-                    f'{task}_space-standard/norm-all-conds_z-score/'
-                    f'pearson/{analysis}/indices.csv')
-                fMRI_vals.append(fMRI_data['value'][
-                     (fMRI_data.level == 'ind') &
-                     (fMRI_data.subtype == 'prop2') &
-                     (fMRI_data.region == 'V1')].mean())
-            print(f'{analysis} {index_type} fMRI values: {fMRI_vals}')
-            print(np.mean(fMRI_vals))
+        # human indices
+        fMRI_vals = []
+        for exp, task in zip(
+                ['exp1', 'exp2', 'exp2'],
+                ['occlusion', 'occlusionAttnOn', 'occlusionAttnOff']):
+            fMRI_data = pd.read_csv(
+                f'../../{exp}/derivatives/RSA/'
+                f'{task}/{analysis}/indices.csv')
+            fMRI_vals.append(fMRI_data['value'][
+                 (fMRI_data.level == 'ind') &
+                 (fMRI_data.subtype == 'prop2') &
+                 (fMRI_data.region == 'V1')].mean())
+        print(f'{analysis} fMRI values: {fMRI_vals}')
+        print(np.mean(fMRI_vals))
 
-            outpath = f'{out_dir}/indices_matrix_{index_type}.pdf'
-            matrix_values = np.empty((len(FIX_STDS_DEG), len(PRF_SIZES_FWHM_DEG)))
-            for (f, fix_std), (r, rf_size) in itp(
-                    enumerate(FIX_STDS_DEG), enumerate(PRF_SIZES_FWHM_DEG)):
-                matrix_values[f, r] = df_indices[
-                    (df_indices.analysis == analysis) &
-                    (df_indices.fix_std == fix_std) &
-                    (df_indices.rf_size == rf_size) &
-                    (df_indices.num_filters == num_filters) &
-                    (df_indices.cell_type == cell_type) &
-                    (df_indices.unit_set == unit_set) &
-                    (df_indices.subtype == index_type)].value.values[0].item()
-            fig, ax = plt.subplots(figsize=(5.5, 4))
-            ax.set_aspect('equal', adjustable='box')
-            im = ax.imshow(matrix_values, vmin=0, vmax=1, cmap='viridis')
-            ax.tick_params(**{'length': 0})
-            ax.set_xticks(np.arange(len(PRF_SIZES_FWHM_DEG)), rf_sizes_labels)
-            ax.set_yticks(np.arange(len(FIX_STDS_DEG)), fix_stds_labels)
-            ax.tick_params(direction='in')
-            ax.spines['top'].set_visible(True)
-            ax.spines['right'].set_visible(True)
-            ax.set_title(analysis.replace('_', ' ') + ' index', fontsize=12)
-            cbar = fig.colorbar(im, fraction=0.0453)
-            fMRI_text = ['human V1, Exp. 1, object task',
-                         'human V1, Exp. 2, object task',
-                         'human V1, Exp. 2, letter task']
-            V1_str = f'V1 ({np.mean(fMRI_vals):.2f})'.replace('0.', '.')
-            cbar.set_ticks([0, np.mean(fMRI_vals), 1],
-                           labels=['0', V1_str, '1'])
-            plt.setp(ax.get_xticklabels(), rotation=0, ha="center",
-                     rotation_mode="anchor")
-            for f, r in itp(range(len(FIX_STDS_DEG)), range(len(PRF_SIZES_FWHM_DEG))):
-                value = matrix_values[f, r]
-                text_col = 'w' if value < np.mean(fMRI_vals) else 'k'
-                ax.text(r, f, f'{value:.2f}'.replace('0.', '.'),
-                        ha='center', va='center', color=text_col)
-            ax.set_ylabel(fix_std_axis_label, fontsize=12)
-            ax.set_xlabel(rf_size_axis_label, fontsize=12)
-            fig.subplots_adjust(left=0.02, top=.94, right=.82, bottom=.16)
-            plt.savefig(outpath)
-            plt.close()
-
-        #tile(rf_images, f'{out_dir}/RF_images.png', num_rows=6, num_cols=5,
-        #     base_gap=8)
+        outpath = f'{out_dir}/indices_matrix.pdf'
+        matrix_values = np.empty((len(FIX_STDS_DEG), len(PRF_SIZES_FWHM_DEG)))
+        for (f, fix_std), (r, rf_size) in itp(
+                enumerate(FIX_STDS_DEG), enumerate(PRF_SIZES_FWHM_DEG)):
+            matrix_values[f, r] = df_indices[
+                (df_indices.analysis == analysis) &
+                (df_indices.fix_std == fix_std) &
+                (df_indices.rf_size == rf_size)].value.values[0].item()
+        fig, ax = plt.subplots(figsize=(5.5, 4))
+        ax.set_aspect('equal', adjustable='box')
+        im = ax.imshow(matrix_values, vmin=0, vmax=1, cmap='viridis')
+        ax.tick_params(**{'length': 0})
+        ax.set_xticks(np.arange(len(PRF_SIZES_FWHM_DEG)), rf_sizes_labels)
+        ax.set_yticks(np.arange(len(FIX_STDS_DEG)), fix_stds_labels)
+        ax.tick_params(direction='in')
+        ax.spines['top'].set_visible(True)
+        ax.spines['right'].set_visible(True)
+        ax.set_title(analysis.replace('_', ' ') + ' index', fontsize=12)
+        cbar = fig.colorbar(im, fraction=0.0453)
+        V1_str = f'V1 ({np.mean(fMRI_vals):.2f})'.replace('0.', '.')
+        cbar.set_ticks([0, np.mean(fMRI_vals), 1],
+                       labels=['0', V1_str, '1'])
+        plt.setp(ax.get_xticklabels(), rotation=0, ha="center",
+                 rotation_mode="anchor")
+        for f, r in itp(range(len(FIX_STDS_DEG)), range(len(PRF_SIZES_FWHM_DEG))):
+            value = matrix_values[f, r]
+            text_col = 'w' if value < np.mean(fMRI_vals) else 'k'
+            ax.text(r, f, f'{value:.2f}'.replace('0.', '.'),
+                    ha='center', va='center', color=text_col)
+        ax.set_ylabel(fix_std_axis_label, fontsize=12)
+        ax.set_xlabel(rf_size_axis_label, fontsize=12)
+        fig.subplots_adjust(left=0.02, top=.94, right=.82, bottom=.16)
+        plt.savefig(outpath)
+        plt.close()
 
 
 def make_rf_figures():
 
-
     rf_params = pd.read_csv('receptive_fields/rf_params.csv')
-    num_filters = 256
-    cell_type = 'all'
 
     # tile pRF images
     outpath = f'receptive_fields/RF_images.pdf'
@@ -867,14 +761,11 @@ def make_rf_figures():
     for (f, fix_std), (r, rf_size) in itp(
             enumerate(FIX_STDS_DEG), enumerate(PRF_SIZES_FWHM_DEG)):
         ax = axes[f, r]
-        ax.imshow(plt.imread(f'receptive_fields/filt-{num_filters}_fixstd-'
-                             f'{fix_std:.2f}_rfsize-{rf_size:.2f}_cell-'
-                             f'{cell_type}/RF_size_2D.png'))
+        ax.imshow(plt.imread(f'receptive_fields/'
+            f'fixstd-{fix_std:.2f}_rfsize-{rf_size:.2f}/RF_size_2D.png'))
         FWHM = rf_params[
             (rf_params.fix_std == fix_std) &
-            (rf_params.rf_size == rf_size) &
-            (rf_params.cell_type == cell_type) &
-            (rf_params.num_filters == num_filters)].FWHM_deg.item()
+            (rf_params.rf_size == rf_size)].FWHM_deg.item()
         if r == 0:
             ax.set_ylabel(fix_stds_labels[f], fontsize=10, rotation=0,
                           labelpad=20)
@@ -906,11 +797,8 @@ def make_rf_figures():
     for (f, fix_std), (r, rf_size) in itp(
             enumerate(FIX_STDS_DEG), enumerate(PRF_SIZES_FWHM_DEG)):
         matrix_values[f, r] = (rf_params[
-                                   (rf_params.fix_std == fix_std) &
-                                   (rf_params.rf_size == rf_size) &
-                                   (rf_params.cell_type == cell_type) &
-                                   (
-                                               rf_params.num_filters == num_filters)].FWHM_deg.item() / .74)
+           (rf_params.fix_std == fix_std) &
+           (rf_params.rf_size == rf_size)].FWHM_deg.item() / .74)
 
     fig, ax = plt.subplots(figsize=(5.5, 4))
     ax.set_aspect('equal', adjustable='box')
@@ -942,10 +830,8 @@ def make_rf_figures():
     for (f, fix_std), (v, rf_size) in itp(
             enumerate(FIX_STDS_DEG), enumerate(PRF_SIZES_FWHM_DEG)):
         matrix_values[f, v] = (rf_params[
-                                   (rf_params.fix_std == fix_std) &
-                                   (rf_params.rf_size == rf_size) &
-                                   (rf_params.cell_type == cell_type) &
-                                   (rf_params.num_filters == num_filters)].FWHM_deg.item())
+           (rf_params.fix_std == fix_std) &
+           (rf_params.rf_size == rf_size)].FWHM_deg.item())
 
     fig, ax = plt.subplots(figsize=(5.5, 4))
     ax.set_aspect('equal', adjustable='box')
@@ -970,8 +856,6 @@ def make_rf_figures():
     fig.subplots_adjust(left=0.02, top=.94, right=.82, bottom=.16)
     plt.savefig(outpath)
     plt.close()
-
-
 
 
 if __name__ == '__main__':
